@@ -1,0 +1,14 @@
+networkx>=3.0
+
+[all]
+ctxflow[binary,dev,nlp]
+
+[binary]
+msgpack>=1.0
+
+[dev]
+pytest>=7.0
+pytest-cov>=4.0
+
+[nlp]
+spacy>=3.0

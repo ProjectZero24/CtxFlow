@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctxflow"
+version = "0.1.0"
+description = "Schema-agnostic, incrementally-built context graph for LLM agent memory"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "networkx>=3.0",
+]
+
+[project.optional-dependencies]
+nlp = ["spacy>=3.0"]
+binary = ["msgpack>=1.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+all = ["ctxflow[nlp,binary,dev]"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-v"
