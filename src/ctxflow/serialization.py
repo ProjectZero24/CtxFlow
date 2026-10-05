@@ -33,6 +33,8 @@ def _node_to_dict(node: Node) -> Dict[str, Any]:
         "metadata": node.metadata,
         "last_accessed": node.last_accessed,
         "access_count": node.access_count,
+        "status": node.status,
+        "superseded_by": node.superseded_by,
     }
 
 
@@ -49,6 +51,8 @@ def _dict_to_node(d: Dict[str, Any]) -> Node:
         metadata=d.get("metadata", {}),
         last_accessed=d.get("last_accessed", 0.0),
         access_count=d.get("access_count", 0),
+        status=d.get("status", "active"),
+        superseded_by=d.get("superseded_by"),
     )
 
 
@@ -60,6 +64,7 @@ def _edge_to_dict(edge: Edge) -> Dict[str, Any]:
         "relation_type": edge.relation_type,
         "weight": edge.weight,
         "timestamp": edge.timestamp,
+        "metadata": edge.metadata,
     }
 
 
@@ -71,6 +76,7 @@ def _dict_to_edge(d: Dict[str, Any]) -> Edge:
         relation_type=d.get("relation_type", "related_to"),
         weight=d.get("weight", 1.0),
         timestamp=d.get("timestamp", 0.0),
+        metadata=d.get("metadata", {}),
     )
 
 

@@ -1,7 +1,8 @@
 """Core data models for CtxFlow.
 
 Defines the schema-agnostic Node and Edge types, framework configuration,
-and query result wrappers. All types use dataclasses with sensible defaults.
+query result wrappers, and provenance/contradiction result types.
+All types use dataclasses with sensible defaults.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -26,6 +28,14 @@ def _now() -> float:
 # Node
 # ---------------------------------------------------------------------------
 
+class NodeStatus(str, Enum):
+    """Validity status of a node in the graph."""
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    CONTESTED = "contested"
+
+
 @dataclass
 class Node:
     """A single context unit in the graph.
@@ -41,6 +51,8 @@ class Node:
         metadata: Arbitrary key-value pairs for consumer-specific data.
         last_accessed: Timestamp of the most recent query hit.
         access_count: Number of times this node has been returned by a query.
+        status: Validity status — ``"active"``, ``"superseded"``, or ``"contested"``.
+        superseded_by: ID of the node that supersedes this one (if any).
     """
 
     content: str
@@ -53,6 +65,8 @@ class Node:
     metadata: Dict[str, Any] = field(default_factory=dict)
     last_accessed: float = 0.0
     access_count: int = 0
+    status: str = NodeStatus.ACTIVE
+    superseded_by: Optional[str] = None
 
     def touch(self) -> None:
         """Update access tracking (called when this node is returned by a query)."""
@@ -71,10 +85,13 @@ class Edge:
     Attributes:
         source_id: ID of the source node.
         target_id: ID of the target node.
-        relation_type: Open vocabulary relation (e.g. "caused_by", "references").
+        relation_type: Open vocabulary relation (e.g. ``"caused_by"``,
+            ``"references"``, ``"supersedes"``, ``"contradicts"``).
         weight: Strength of the relationship (0–1), typically Jaccard similarity
                 for auto-linked edges.
         timestamp: Creation time (seconds since epoch).
+        metadata: Arbitrary key-value pairs (e.g. ``{"confidence": 0.85,
+            "evidence": "..."}`` for contradiction edges).
     """
 
     source_id: str
@@ -82,6 +99,7 @@ class Edge:
     relation_type: str = "related_to"
     weight: float = 1.0
     timestamp: float = field(default_factory=_now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +143,23 @@ class CtxFlowConfig:
 
     bfs_max_depth: int = 3
     """Maximum BFS hops from anchor node for proximity scoring."""
+
+    # -- Embedding (optional) --
+    embedding_enabled: bool = False
+    """When True, use embedding cosine similarity as a scoring signal."""
+
+    embedding_model: str = "text-embedding-3-small"
+    """Identifier of the embedding model (informational, not used directly)."""
+
+    # -- Contradiction detection --
+    contradiction_detection: bool = False
+    """When True, run contradiction detection during ingest."""
+
+    contradiction_similarity_threshold: float = 0.3
+    """Minimum tag similarity to consider a node as a contradiction candidate."""
+
+    contradiction_confidence_threshold: float = 0.7
+    """Minimum LLM confidence to apply a supersession edge."""
 
     # -- Pruning --
     prune_min_access: int = 0
@@ -180,3 +215,78 @@ class QueryResult:
             f"score={self.score:.4f}, "
             f"type={self.node.node_type!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Contradiction / supersession result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ContradictionResult:
+    """Result of checking whether two nodes contradict or supersede each other.
+
+    Attributes:
+        existing_node_id: ID of the existing node being compared against.
+        relation: Detected relation — ``"supersedes"``, ``"contradicts"``,
+            ``"supports"``, or ``"unrelated"``.
+        confidence: LLM-assigned confidence in the relation (0–1).
+        evidence: Free-text reasoning from the LLM.
+    """
+
+    existing_node_id: str
+    relation: str  # "supersedes" | "contradicts" | "supports" | "unrelated"
+    confidence: float = 0.0
+    evidence: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Provenance / research trace
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ProvenanceStep:
+    """A single step in a backward provenance walk.
+
+    Attributes:
+        node: The node at this step.
+        edge: The edge that connects this node to the previous step
+            (``None`` for the root node).
+    """
+
+    node: Node
+    edge: Optional[Edge] = None
+
+
+@dataclass
+class ProvenanceChain:
+    """A backward chain of provenance from a root node to its sources.
+
+    Attributes:
+        root: The node where the trace started.
+        steps: Ordered list of provenance steps (root first, sources last).
+        contradictions: Nodes and edges that contradict or supersede
+            nodes in the chain.
+    """
+
+    root: Node
+    steps: List[ProvenanceStep] = field(default_factory=list)
+    contradictions: List[Tuple[Node, Edge]] = field(default_factory=list)
+
+
+@dataclass
+class ResearchTrace:
+    """Full provenance and contradiction context for a query answer.
+
+    Attributes:
+        answer_node_id: ID of the node whose trace this represents.
+        supporting_chain: Backward provenance chain.
+        superseded_claims: Nodes marked as superseded in the chain.
+        contradicting_claims: Nodes that contradict claims in the chain.
+        source_papers: Leaf nodes that represent paper references.
+    """
+
+    answer_node_id: str
+    supporting_chain: ProvenanceChain
+    superseded_claims: List[Node] = field(default_factory=list)
+    contradicting_claims: List[Tuple[Node, Edge]] = field(default_factory=list)
+    source_papers: List[Node] = field(default_factory=list)

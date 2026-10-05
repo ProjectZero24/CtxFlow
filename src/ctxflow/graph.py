@@ -13,15 +13,15 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
 
-from ctxflow.models import Edge, Node
+from ctxflow.models import Edge, Node, NodeStatus, ProvenanceChain, ProvenanceStep
 
 
 class ContextGraph:
     """In-memory directed graph wrapping ``networkx.DiGraph``.
 
     Nodes are stored as graph-node attributes keyed by ``node.id``.
-    Edges carry ``relation_type``, ``weight``, and ``timestamp`` as
-    edge-data attributes.
+    Edges carry ``relation_type``, ``weight``, ``timestamp``, and
+    ``metadata`` as edge-data attributes.
     """
 
     def __init__(self) -> None:
@@ -76,7 +76,30 @@ class ContextGraph:
         """Return all nodes (order is insertion-dependent)."""
         return [self._g.nodes[nid]["data"] for nid in self._g.nodes]
 
+    def get_nodes_by_status(self, status: str) -> List[Node]:
+        """Return all nodes with the given status.
+
+        Parameters
+        ----------
+        status : str
+            One of ``"active"``, ``"superseded"``, ``"contested"``.
+        """
+        return [n for n in self.all_nodes() if n.status == status]
+
     # -- Edge operations ----------------------------------------------------
+
+    def _edge_from_data(
+        self, source_id: str, target_id: str, data: dict
+    ) -> Edge:
+        """Reconstruct an Edge from NetworkX edge-data dict."""
+        return Edge(
+            source_id=source_id,
+            target_id=target_id,
+            relation_type=data.get("relation_type", "related_to"),
+            weight=data.get("weight", 1.0),
+            timestamp=data.get("timestamp", 0.0),
+            metadata=data.get("metadata", {}),
+        )
 
     def add_edge(self, edge: Edge) -> bool:
         """Insert a directed edge. Returns ``False`` if source or target is missing."""
@@ -88,6 +111,7 @@ class ContextGraph:
             relation_type=edge.relation_type,
             weight=edge.weight,
             timestamp=edge.timestamp,
+            metadata=edge.metadata,
         )
         return True
 
@@ -95,33 +119,45 @@ class ContextGraph:
         """Return all outgoing edges from *node_id*."""
         if node_id not in self._g:
             return []
-        edges: List[Edge] = []
-        for _, target, data in self._g.out_edges(node_id, data=True):
-            edges.append(
-                Edge(
-                    source_id=node_id,
-                    target_id=target,
-                    relation_type=data.get("relation_type", "related_to"),
-                    weight=data.get("weight", 1.0),
-                    timestamp=data.get("timestamp", 0.0),
-                )
-            )
-        return edges
+        return [
+            self._edge_from_data(node_id, target, data)
+            for _, target, data in self._g.out_edges(node_id, data=True)
+        ]
 
     def get_edges_to(self, node_id: str) -> List[Edge]:
         """Return all incoming edges to *node_id*."""
         if node_id not in self._g:
             return []
+        return [
+            self._edge_from_data(source, node_id, data)
+            for source, _, data in self._g.in_edges(node_id, data=True)
+        ]
+
+    def get_edges_by_type(
+        self, node_id: str, relation_type: str, *, direction: str = "both"
+    ) -> List[Edge]:
+        """Return edges incident to *node_id* with a specific relation type.
+
+        Parameters
+        ----------
+        node_id : str
+            The node to inspect.
+        relation_type : str
+            The relation type to filter by (e.g. ``"supersedes"``).
+        direction : str
+            ``"out"`` for outgoing only, ``"in"`` for incoming only,
+            ``"both"`` for both directions.
+        """
         edges: List[Edge] = []
-        for source, _, data in self._g.in_edges(node_id, data=True):
-            edges.append(
-                Edge(
-                    source_id=source,
-                    target_id=node_id,
-                    relation_type=data.get("relation_type", "related_to"),
-                    weight=data.get("weight", 1.0),
-                    timestamp=data.get("timestamp", 0.0),
-                )
+        if direction in ("out", "both"):
+            edges.extend(
+                e for e in self.get_edges_from(node_id)
+                if e.relation_type == relation_type
+            )
+        if direction in ("in", "both"):
+            edges.extend(
+                e for e in self.get_edges_to(node_id)
+                if e.relation_type == relation_type
             )
         return edges
 
@@ -175,6 +211,95 @@ class ContextGraph:
                     queue.append((nbr, depth + 1))
 
         return visited
+
+    # -- Provenance traversal -----------------------------------------------
+
+    # Edge types that represent provenance (backward-walkable).
+    _PROVENANCE_EDGE_TYPES: Set[str] = {
+        "follows", "derived_from", "extracted_from", "references",
+    }
+    # Edge types that represent contradiction / supersession.
+    _CONTRADICTION_EDGE_TYPES: Set[str] = {
+        "supersedes", "contradicts",
+    }
+
+    def trace_provenance(
+        self,
+        node_id: str,
+        max_depth: int = 10,
+    ) -> ProvenanceChain:
+        """Walk backward through provenance edges from *node_id*.
+
+        Follows ``follows``, ``derived_from``, ``extracted_from``, and
+        ``references`` edges backward (i.e. from target to source) to
+        build a chain from the given node to its original sources.
+
+        Also collects any ``supersedes`` or ``contradicts`` edges that
+        touch nodes in the chain.
+
+        Parameters
+        ----------
+        node_id : str
+            The starting node (typically a claim or answer node).
+        max_depth : int
+            Maximum backward hops to follow.
+
+        Returns
+        -------
+        ProvenanceChain
+            The root node, ordered provenance steps, and any
+            contradiction edges found along the chain.
+        """
+        root = self.get_node(node_id)
+        if root is None:
+            return ProvenanceChain(
+                root=Node(content="", id=node_id),
+                steps=[],
+                contradictions=[],
+            )
+
+        steps: List[ProvenanceStep] = [ProvenanceStep(node=root, edge=None)]
+        contradictions: List[Tuple[Node, Edge]] = []
+        visited: Set[str] = {node_id}
+
+        # BFS backward through provenance edges.
+        queue: deque[Tuple[str, int]] = deque([(node_id, 0)])
+
+        while queue:
+            current_id, depth = queue.popleft()
+            if depth >= max_depth:
+                continue
+
+            # Check incoming edges (we walk backward: target -> source).
+            for edge in self.get_edges_to(current_id):
+                if edge.relation_type in self._PROVENANCE_EDGE_TYPES:
+                    if edge.source_id not in visited:
+                        visited.add(edge.source_id)
+                        source_node = self.get_node(edge.source_id)
+                        if source_node is not None:
+                            steps.append(
+                                ProvenanceStep(node=source_node, edge=edge)
+                            )
+                            queue.append((edge.source_id, depth + 1))
+
+            # Also check for contradiction edges touching this node.
+            for edge in self.get_edges_to(current_id):
+                if edge.relation_type in self._CONTRADICTION_EDGE_TYPES:
+                    contra_node = self.get_node(edge.source_id)
+                    if contra_node is not None:
+                        contradictions.append((contra_node, edge))
+
+            for edge in self.get_edges_from(current_id):
+                if edge.relation_type in self._CONTRADICTION_EDGE_TYPES:
+                    contra_node = self.get_node(edge.target_id)
+                    if contra_node is not None:
+                        contradictions.append((contra_node, edge))
+
+        return ProvenanceChain(
+            root=root,
+            steps=steps,
+            contradictions=contradictions,
+        )
 
     # -- Tag-based retrieval ------------------------------------------------
 

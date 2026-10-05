@@ -4,6 +4,10 @@ Implements the composable scoring function:
     score(n) = α·tag_overlap(n, query) + β·recency(n) + γ·proximity(n, anchor)
 
 All weights are configurable per-query (overriding config defaults).
+
+When ``include_superseded`` is ``False`` (the default), nodes with
+status ``"superseded"`` are excluded from results. Nodes with status
+``"contested"`` are included but flagged in the score breakdown.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from ctxflow.extractors import Extractor
 from ctxflow.governance import GovernanceEngine
 from ctxflow.graph import ContextGraph
-from ctxflow.models import CtxFlowConfig, Node, QueryResult
+from ctxflow.models import CtxFlowConfig, Node, NodeStatus, QueryResult
 
 
 class QueryEngine:
@@ -37,6 +41,7 @@ class QueryEngine:
         k: int = 5,
         weights: Optional[Tuple[float, float, float]] = None,
         anchor: Optional[str] = None,
+        include_superseded: bool = False,
     ) -> List[QueryResult]:
         """Score all nodes and return the top-*k* results.
 
@@ -52,6 +57,10 @@ class QueryEngine:
             Override ``(alpha, beta, gamma)`` for this query.
         anchor : str | None
             Node ID to use as the proximity anchor.
+        include_superseded : bool
+            If ``False`` (default), nodes with status ``"superseded"``
+            are excluded from results. Set to ``True`` to include them
+            (useful for provenance auditing).
 
         Returns
         -------
@@ -80,6 +89,10 @@ class QueryEngine:
         results: List[QueryResult] = []
 
         for node in all_nodes:
+            # Filter out superseded nodes unless explicitly requested.
+            if not include_superseded and node.status == NodeStatus.SUPERSEDED:
+                continue
+
             # Tag overlap (Jaccard).
             tag_score = ContextGraph.jaccard(query_tags, node.tags)
 
@@ -106,15 +119,21 @@ class QueryEngine:
             degree = graph.total_degree(node.id)
             score = self.governance.normalize_score(score, degree)
 
+            breakdown = {
+                "tag_overlap": tag_score,
+                "recency": recency_score,
+                "proximity": proximity_score,
+            }
+
+            # Flag contested nodes so consumers can surface warnings.
+            if node.status == NodeStatus.CONTESTED:
+                breakdown["contested"] = 1.0
+
             results.append(
                 QueryResult(
                     node=node,
                     score=score,
-                    score_breakdown={
-                        "tag_overlap": tag_score,
-                        "recency": recency_score,
-                        "proximity": proximity_score,
-                    },
+                    score_breakdown=breakdown,
                 )
             )
 
@@ -127,3 +146,4 @@ class QueryEngine:
             result.node.touch()
 
         return top_k
+
