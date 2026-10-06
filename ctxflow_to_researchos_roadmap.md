@@ -6,15 +6,15 @@
 
 | Module | File | Status |
 |---|---|---|
-| Data models | [`models.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/models.py) | ✅ Node, Edge, Config, QueryResult |
-| Graph engine | [`graph.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/graph.py) | ✅ NetworkX DiGraph, tag index, BFS, Jaccard |
-| Governance | [`governance.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/governance.py) | ✅ Degree cap + score normalization |
-| Query engine | [`query.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/query.py) | ✅ α·tag + β·recency + γ·proximity scoring |
-| Pruning | [`pruning.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/pruning.py) | ✅ Drop + Summarize (RAPTOR-style compaction) |
-| Extractors | [`extractors.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/extractors.py) | ✅ Abstract interface + rule-based default |
-| Serialization | [`serialization.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/serialization.py) | ✅ JSON + MessagePack |
-| Facade | [`__init__.py`](file:///d:/DEEPLEARNIING/CtxFlow/src/ctxflow/__init__.py) | ✅ `ingest`, `query`, `prune`, `export/import_` |
-| Tests | [`tests/`](file:///d:/DEEPLEARNIING/CtxFlow/tests) | ✅ 8 test files covering all modules |
+| Data models | [`models.py`]| ✅ Node, Edge, Config, QueryResult |
+| Graph engine | [`graph.py`] | ✅ NetworkX DiGraph, tag index, BFS, Jaccard |
+| Governance | [`governance.py`]| ✅ Degree cap + score normalization |
+| Query engine | [`query.py`]| ✅ α·tag + β·recency + γ·proximity scoring |
+| Pruning | [`pruning.py`] | ✅ Drop + Summarize (RAPTOR-style compaction) |
+| Extractors | [`extractors.py`]| ✅ Abstract interface + rule-based default |
+| Serialization | [`serialization.py`] | ✅ JSON + MessagePack |
+| Facade | [`__init__.py`] | ✅ `ingest`, `query`, `prune`, `export/import_` |
+| Tests | [`tests/`] | ✅ 8 test files covering all modules |
 
 # CtxFlow — Implementation Plan v2 (Revised and Expanded)
 
