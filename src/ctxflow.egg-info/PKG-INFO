@@ -6,12 +6,14 @@ License: MIT
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: networkx>=3.0
+Requires-Dist: asyncpg>=0.29.0
 Provides-Extra: nlp
 Requires-Dist: spacy>=3.0; extra == "nlp"
 Provides-Extra: binary
 Requires-Dist: msgpack>=1.0; extra == "binary"
 Provides-Extra: llm
 Requires-Dist: openai>=1.0; extra == "llm"
+Requires-Dist: python-dotenv>=1.0; extra == "llm"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0; extra == "dev"
@@ -106,3 +108,36 @@ Run the full test suite with `pytest`:
 ```bash
 pytest tests
 ```
+
+## Memory vertical slice (Christo, weeks 3–6)
+
+The `ctxflow.memory` package includes the production memory path while
+retaining the deterministic in-memory implementation for local tests:
+
+```python
+from ctxflow.memory import (
+    Event, EventIngestor, HashEmbedder, InMemoryMemoryStore, utc_now,
+)
+
+store = InMemoryMemoryStore()
+ingestor = EventIngestor(store, HashEmbedder())
+result = await ingestor.ingest(Event(
+    event_id="event-1",
+    session_id="session-1",
+    ts=utc_now(),
+    role="user",
+    content="The deployment uses the blue environment.",
+))
+matches = await store.search(
+    await HashEmbedder().embed("blue deployment"),
+    "blue deployment",
+    k=5,
+)
+neighbors = await store.neighbors(result.memory_ids[0], depth=2)
+```
+
+`PostgresMemoryStore` uses the schema in
+`migrations/001_memory_schema.sql` and pgvector cosine search. Embeddings,
+tokenizers, and the PostgreSQL driver are intentionally adapter boundaries;
+`HashEmbedder` and `SimpleTokenizer` provide deterministic development
+fallbacks without requiring a model server or database in CI.

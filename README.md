@@ -86,3 +86,47 @@ Run the full test suite with `pytest`:
 ```bash
 pytest tests
 ```
+
+## Memory vertical slice (Christo, weeks 3–6)
+
+The `ctxflow.memory` package includes the production memory path while
+retaining the deterministic in-memory implementation for local tests:
+
+```python
+from ctxflow.memory import (
+    Event, EventIngestor, HashEmbedder, InMemoryMemoryStore, utc_now,
+)
+
+store = InMemoryMemoryStore()
+ingestor = EventIngestor(store, HashEmbedder())
+result = await ingestor.ingest(Event(
+    event_id="event-1",
+    session_id="session-1",
+    ts=utc_now(),
+    role="user",
+    content="The deployment uses the blue environment.",
+))
+matches = await store.search(
+    await HashEmbedder().embed("blue deployment"),
+    "blue deployment",
+    k=5,
+)
+neighbors = await store.neighbors(result.memory_ids[0], depth=2)
+```
+
+`PostgresMemoryStore` uses the schema in
+`migrations/001_memory_schema.sql` and pgvector cosine search. Embeddings,
+tokenizers, and the PostgreSQL driver are intentionally adapter boundaries;
+`HashEmbedder` and `SimpleTokenizer` provide deterministic development
+fallbacks without requiring a model server or database in CI.
+
+For the PostgreSQL-backed event path, place `DB_HOST`, `DB_PORT`, `DB_NAME`,
+`DB_USER`, and `DB_PASSWORD` in the project-root `.env` file. The runtime reads
+these values separately and owns the pool lifecycle:
+
+```python
+from ctxflow.memory import PostgresMemoryRuntime
+
+async with await PostgresMemoryRuntime.create() as runtime:
+    result = await runtime.ingestor.ingest(event)
+```
