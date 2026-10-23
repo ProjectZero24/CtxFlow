@@ -1,6 +1,10 @@
 import os
 from openai import OpenAI
+from dotenv import load_dotenv
 from ctxflow import CtxFlow
+
+load_dotenv()
+
 # Helper to format retrieved nodes for LLM prompt injection
 def format_context_for_llm(results):
     items = [f"- [{r.node.node_type.upper()}] {r.node.content}" for r in results]
@@ -8,6 +12,11 @@ def format_context_for_llm(results):
 
 # Initialize OpenAI client to route to NVIDIA NIM endpoints
 api_key = os.environ.get("NVIDIA_API_KEY")
+if not api_key:
+    raise RuntimeError(
+        "NVIDIA_API_KEY is not set. Set it before running tests/llm.py."
+    )
+
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key=api_key,

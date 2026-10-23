@@ -1,0 +1,30 @@
+{
+  "memories": [
+    {
+      "id": "fixture-source",
+      "text": "The source paper reports a 12 percent improvement.",
+      "memory_type": "document",
+      "tier": "episodic",
+      "source": "paper",
+      "entities": ["source paper"]
+    },
+    {
+      "id": "fixture-summary",
+      "text": "The paper's result is a meaningful improvement.",
+      "memory_type": "summary",
+      "tier": "semantic",
+      "source": "consolidation",
+      "entities": ["source paper"]
+    }
+  ],
+  "edges": [
+    {
+      "src": "fixture-summary",
+      "dst": "fixture-source",
+      "relation": "summary_of",
+      "weight": 1.0,
+      "confidence": 1.0,
+      "created_by": "gold"
+    }
+  ]
+}

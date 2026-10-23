@@ -1,0 +1,10 @@
+{
+  "id": "fixture-versioned",
+  "text": "The experiment uses the small embedding model.",
+  "memory_type": "decision",
+  "tier": "episodic",
+  "session_id": "session-versioned",
+  "source": "assistant",
+  "importance": 0.7,
+  "entities": ["embedding model"]
+}

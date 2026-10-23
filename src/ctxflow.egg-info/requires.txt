@@ -10,5 +10,8 @@ msgpack>=1.0
 pytest>=7.0
 pytest-cov>=4.0
 
+[llm]
+openai>=1.0
+
 [nlp]
 spacy>=3.0

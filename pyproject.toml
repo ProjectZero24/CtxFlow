@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 nlp = ["spacy>=3.0"]
 binary = ["msgpack>=1.0"]
+llm = ["openai>=1.0", "python-dotenv>=1.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
