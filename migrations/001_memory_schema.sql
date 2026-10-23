@@ -2,6 +2,14 @@
 -- Current memory rows are denormalized for reads; versions remain append-only.
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- The application records the event hash before creating memories so retries
+-- remain idempotent even when workers are restarted.
+CREATE TABLE ingestion_events (
+    event_hash TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE memories (
     id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
@@ -16,7 +24,7 @@ CREATE TABLE memories (
     validity TEXT NOT NULL DEFAULT 'valid',
     archived BOOLEAN NOT NULL DEFAULT FALSE,
     entities TEXT[] NOT NULL DEFAULT '{}',
-    embedding VECTOR,
+    embedding VECTOR(128),
     embedding_model TEXT NOT NULL DEFAULT '',
     token_counts JSONB NOT NULL DEFAULT '{}'::jsonb
 );
@@ -25,7 +33,7 @@ CREATE TABLE memory_versions (
     memory_id TEXT NOT NULL REFERENCES memories(id),
     version INTEGER NOT NULL CHECK (version >= 1),
     text TEXT NOT NULL,
-    embedding VECTOR,
+    embedding VECTOR(128),
     created_at TIMESTAMPTZ NOT NULL,
     reason TEXT NOT NULL,
     supersedes_version INTEGER,
@@ -54,3 +62,7 @@ CREATE TABLE provenance (
     parent_memories TEXT[] NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE INDEX memories_embedding_hnsw_idx ON memories
+    USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX memories_type_validity_idx ON memories (memory_type, validity, archived);
