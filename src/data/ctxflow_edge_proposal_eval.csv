@@ -1,0 +1,41 @@
+example_id,source_memory,candidate_memory,expected_relation
+E001,"For the review ledger, I computed a 15% exclusion rate from screening batch B7.",Screening batch B7 contained 80 papers; 12 were excluded.,derived_from
+E002,The review covers memory retrieval in research agents.,A separate reading list covers human episodic memory during sleep.,
+E003,The research assistant can retrieve passages from the private corpus only when its access token is valid.,A valid corpus access token authorizes private passage retrieval.,depends_on
+E004,The research assistant uses the Atlas index for paper retrieval.,An atlas of coastal bird migration was added to an unrelated ecology reading list.,
+E005,I chose local reranking for the review agent because the privacy audit rules out sending manuscript text to external services.,The manuscript privacy audit prohibits transmitting manuscript text to external services.,based_on
+E006,The paper-search request timed out during the review session.,The bibliography exporter also reported an error during that session.,
+E007,Screening recap for batch C2: six studies included and four excluded for lacking an agent evaluation.,Batch C2 screening: ten studies examined; six included; four excluded because they did not evaluate an agent.,summary_of
+E008,Paper R reports that reranking improves retrieval precision on its legal corpus.,Paper S evaluates reranking latency on a biomedical corpus.,
+E009,The research agent lost its unsaved extraction table when the worker crashed; the crash report confirms the loss mechanism.,The extraction worker crashed before it could persist the in-memory table.,caused_by
+E010,Run D4 returned no passages for the literature query.,The corpus token was rotated that morning.,
+E011,"For this review, replace the earlier open-access-only rule with eligibility regardless of access status.",This review includes only open-access studies.,supersedes
+E012,"For review Alpha, include only English-language papers.","For review Beta, include papers in any language.",
+E013,"Paper K, Table 2, reports 240 evaluated questions.","Paper K, Table 2, reports 420 evaluated questions.",contradicts
+E014,The pilot found a retrieval gain using encoder M on dataset X.,A later experiment found no retrieval gain using encoder N on dataset Y.,
+E015,"For my literature briefs, use numbered citations and avoid footnotes.","My literature briefs should cite sources with numbers, without footnotes.",duplicate_of
+E016,The user prefers concise abstracts in weekly literature briefs.,The project lead prefers detailed methods sections in grant proposals.,
+E017,"After the title-screening stage finished, the research assistant began abstract screening for batch F3.",The research assistant completed title screening for batch F3.,follows
+E018,The research assistant finished an extraction task at noon.,An unrelated benchmark server restarted at 12:05.,
+E019,The methods appendix for the agent-memory review is stored at /review/methods.md.,The same methods appendix has an accessibility checklist covering table headers and link text.,related_to
+E020,The review agent caches retrieved abstracts.,A clinical paper studies cachexia in patients.,
+E021,"I normalized the extracted title ""  Memory   Maps "" to ""Memory Maps"" for the research ledger.","The extraction record contains the raw title ""  Memory   Maps "".",derived_from
+E022,The research agent is evaluating embedding model Cedar.,"Another team has an experiment named Cedar, with no recorded model details.",
+E023,The synthesis agent cannot resolve study citations unless the DOI-to-record lookup table is loaded.,The DOI-to-record lookup table maps each study DOI to its citation record.,depends_on
+E024,The literature agent runs its retriever with a five-second timeout.,A note recommends retries for transient network errors in general.,
+E025,I selected the stratified test split because the audit found that the random split omitted all negative-result papers.,The split audit found zero negative-result papers in the random test partition.,based_on
+E026,The literature review stores approved extraction records in SQLite.,A separate tutorial demonstrates PostgreSQL migrations.,
+E027,"Pilot P recap: ten queries, eight successful retrievals, two empty results, and no retries.",Pilot P log: ten queries issued; eight returned passages; two returned none; retry count was zero.,summary_of
+E028,The agent extracted a sample size of 60 from Paper J.,The agent extracted a sample size of 60 from Paper L.,
+E029,Tracing confirmed that the stale DOI cache caused the assistant to cite the withdrawn identifier for Study V.,The stale DOI cache still mapped Study V to its withdrawn identifier.,caused_by
+E030,The assistant drafted a conclusion before the ablation report was uploaded.,The ablation report shows a small latency reduction.,
+E031,"For future literature briefs, use short bullet points; this replaces my earlier preference for paragraph summaries.","For literature briefs, I prefer paragraph summaries.",supersedes
+E032,A proposed screening protocol for an unspecified review would exclude workshop papers.,Review Delta's approved protocol includes workshop papers.,
+E033,"For frozen corpus Q, the manifest says every document has a DOI.","For that same frozen corpus Q, the manifest says document Q17 has no DOI.",contradicts
+E034,Paper N reports an accuracy of 82%.,"A scratch note says ""82% accuracy"" without a paper, dataset, or run identifier.",
+E035,The agent-memory review has 18 eligible studies after screening.,"After screening, 18 studies qualify for the agent-memory review.",duplicate_of
+E036,The research agent enabled retrieval-result caching.,The next evaluation recorded lower latency.,
+E037,"Once full-text screening ended for batch H2, the assistant started extracting methods from its included studies.",The assistant finished full-text screening for batch H2.,follows
+E038,The paper-analysis worker failed to load a parser module.,A note says the embedding worker has a missing optional tokenizer package.,
+E039,The review artifact named Evidence Grid has a usability note requesting larger row labels.,That same Evidence Grid artifact has a maintenance note naming the backup location.,related_to
+E040,The assistant recorded that Study T uses a control group.,The agent workflow has a control node for routing tool calls.,

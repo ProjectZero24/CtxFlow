@@ -114,6 +114,42 @@ class PostgresMemoryStore:
                 await self._insert_provenance(connection, provenance)
         return True
 
+    async def persist_ingestions(
+        self,
+        event_hash: str,
+        event_id: str,
+        memories: list[Memory],
+        edges: list[Edge],
+        provenances: list[Provenance],
+    ) -> bool:
+        """Persist core records and deterministic edges in one transaction.
+
+        Optional LLM-proposed edges are added by ``EventIngestor`` only after
+        this transaction commits, so provider failures cannot roll back the
+        event or its core memory records.
+        """
+
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                claimed = await connection.fetchval(
+                    """INSERT INTO ingestion_events (event_hash,event_id)
+                    VALUES ($1,$2) ON CONFLICT (event_hash) DO NOTHING
+                    RETURNING event_hash""",
+                    event_hash,
+                    event_id,
+                )
+                if claimed is None:
+                    return False
+                for memory in memories:
+                    vector = self._checked_vector(memory.embedding)
+                    await self._insert_memory(connection, memory, vector)
+                    await self._insert_initial_version(connection, memory, vector)
+                for edge in edges:
+                    await self._insert_edge(connection, edge)
+                for provenance in provenances:
+                    await self._insert_provenance(connection, provenance)
+        return True
+
     async def get(self, memory_id: str, version: int | None = None,
                   as_of: datetime | None = None) -> Memory | None:
         async with self.pool.acquire() as connection:
@@ -282,6 +318,18 @@ class PostgresMemoryStore:
                 "SELECT * FROM memory_versions WHERE memory_id=$1 ORDER BY version", memory_id
             )
         return [_version_from_row(row) for row in rows]
+
+    async def record_access(self, memory_id: str) -> None:
+        async with self.pool.acquire() as connection:
+            updated = await connection.execute(
+                """UPDATE memories
+                SET access_count = access_count + 1,
+                    importance = LEAST(1.0, importance + 0.05)
+                WHERE id=$1""",
+                memory_id,
+            )
+            if updated == "UPDATE 0":
+                raise KeyError(f"Unknown memory: {memory_id}")
 
     async def add_edge(self, edge: Edge) -> None:
         async with self.pool.acquire() as connection:
