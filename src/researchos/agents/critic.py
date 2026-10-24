@@ -81,6 +81,37 @@ class CriticAgent(BaseAgent):
             if not answer:
                 answer = prev_output.get("answer", "")
 
+        # CLAIM_VERIFICATION routes directly to the Critic, so there may be
+        # no synthesized draft. Fall back to verifying the query itself.
+        if not cited_nodes and query:
+            verification = self.verify_claim(query)
+            supporting = verification.get("supporting_evidence", [])
+            contradicted = verification.get("contradicting_evidence", [])
+            superseded_evidence = verification.get("superseded_evidence", [])
+
+            cited_nodes = (
+                [item["node_id"] for item in supporting]
+                + [item["node_id"] for item in contradicted]
+                + [item["node_id"] for item in superseded_evidence]
+            )
+            answer = (
+                f"Verification of {query!r}: "
+                f"{len(supporting)} supporting claim(s), "
+                f"{len(contradicted)} contradicting claim(s), and "
+                f"{len(superseded_evidence)} superseded claim(s) found."
+            )
+            alerts = [
+                {
+                    "type": "superseded",
+                    "node_id": item["node_id"],
+                    "superseded_by": item.get("superseded_by"),
+                    "message": (
+                        f"Node [{item['node_id']}] has been superseded."
+                    ),
+                }
+                for item in superseded_evidence
+            ]
+
         # Validate each cited node
         validations: List[Dict[str, Any]] = []
         supersession_warnings: List[Dict[str, Any]] = []

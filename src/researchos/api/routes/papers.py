@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from ctxflow.models import NodeStatus
 from researchos.api.schemas import (
     EdgeResponse,
     GraphDataResponse,
@@ -40,6 +45,23 @@ def set_app_state(state: dict) -> None:
 # Paper Ingestion
 # ---------------------------------------------------------------------------
 
+def _superseded_count(ctxflow: Any) -> int:
+    return sum(
+        1
+        for node in ctxflow.graph.all_nodes()
+        if node.status == NodeStatus.SUPERSEDED
+    )
+
+
+def _title_tags(title: str) -> set:
+    tags = set()
+    for word in title.lower().split():
+        cleaned = word.strip(".,;:!?()[]{}\"'")
+        if len(cleaned) > 3:
+            tags.add(cleaned)
+    return tags
+
+
 @router.post("/papers/ingest", response_model=PaperIngestResponse)
 async def ingest_paper(request: PaperIngestRequest) -> PaperIngestResponse:
     """Ingest a paper into the knowledge graph."""
@@ -57,17 +79,15 @@ async def ingest_paper(request: PaperIngestRequest) -> PaperIngestResponse:
         if request.doi:
             paper_content += f"\nDOI: {request.doi}"
 
-        paper_tags = set()
-        for word in request.title.lower().split():
-            cleaned = word.strip(".,;:!?()[]{}\"'")
-            if len(cleaned) > 3:
-                paper_tags.add(cleaned)
+        paper_tags = _title_tags(request.title)
+        superseded_before = _superseded_count(ctxflow)
 
         paper_node_id = ctxflow.ingest(
             content=paper_content,
             node_type="paper",
             tags=paper_tags,
             metadata={
+                "project_id": request.project_id,
                 "title": request.title,
                 "authors": request.authors,
                 "year": request.year,
@@ -80,11 +100,9 @@ async def ingest_paper(request: PaperIngestRequest) -> PaperIngestResponse:
 
         # Ingest claims from abstract/content
         claim_ids: list = []
-        contradictions = 0
         text_to_process = request.abstract or request.content
 
         if text_to_process:
-            import re
             sentences = re.split(r'(?<=[.!?])\s+', text_to_process)
             for sentence in sentences:
                 sentence = sentence.strip()
@@ -98,6 +116,7 @@ async def ingest_paper(request: PaperIngestRequest) -> PaperIngestResponse:
                     relation_type="extracted_from",
                     tags=paper_tags,
                     metadata={
+                        "project_id": request.project_id,
                         "source_paper": request.title,
                         "source_doi": request.doi,
                     },
@@ -105,16 +124,120 @@ async def ingest_paper(request: PaperIngestRequest) -> PaperIngestResponse:
                 )
                 claim_ids.append(claim_id)
 
+        contradictions = max(
+            0, _superseded_count(ctxflow) - superseded_before
+        )
+
         return PaperIngestResponse(
             success=True,
             paper_node_id=paper_node_id,
             claim_node_ids=claim_ids,
             contradictions_found=contradictions,
+            project_id=request.project_id,
             message=f"Ingested paper '{request.title}' with {len(claim_ids)} claims.",
         )
     except Exception as exc:
         logger.error("Paper ingest failed: %s", exc, exc_info=True)
         raise HTTPException(500, detail=str(exc))
+
+
+@router.post("/papers/upload", response_model=PaperIngestResponse)
+async def upload_paper(
+    file: UploadFile = File(...),
+    project_id: str = Form("default"),
+    title: str = Form(""),
+) -> PaperIngestResponse:
+    """Parse a PDF with the Paper Reader skill and ingest its claims."""
+    ctxflow = _app_state.get("ctxflow")
+    if ctxflow is None:
+        raise HTTPException(503, detail="CtxFlow not initialized")
+
+    paper_reader = _app_state.get("paper_reader")
+    if paper_reader is None:
+        raise HTTPException(503, detail="Paper Reader skill not initialized")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, detail="Uploaded file is empty")
+
+    suffix = Path(file.filename or "paper.pdf").suffix or ".pdf"
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+            handle.write(payload)
+            temp_path = handle.name
+
+        info = paper_reader.read_pdf(temp_path)
+        extracted = paper_reader.extract_claims(temp_path)
+    except ImportError as exc:
+        raise HTTPException(
+            503,
+            detail=(
+                "PDF parsing requires PyMuPDF. Install it with "
+                "`pip install ctxflow[researchos]`."
+            ),
+        ) from exc
+    except Exception as exc:
+        logger.error("Paper upload failed: %s", exc, exc_info=True)
+        raise HTTPException(500, detail=str(exc))
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    paper_title = title.strip() or info.get("title") or Path(
+        file.filename or "Untitled paper"
+    ).stem
+    paper_tags = _title_tags(paper_title)
+    superseded_before = _superseded_count(ctxflow)
+
+    paper_node_id = ctxflow.ingest(
+        content=f"Paper: {paper_title}\n\n{info.get('full_text', '')[:5000]}",
+        node_type="paper",
+        tags=paper_tags,
+        metadata={
+            "project_id": project_id,
+            "title": paper_title,
+            "filename": file.filename or "",
+            "page_count": info.get("page_count", 0),
+        },
+        check_contradictions=False,
+    )
+
+    claim_ids = []
+    for claim in extracted:
+        claim_tags = paper_tags | set(claim.tags)
+        claim_id = ctxflow.ingest(
+            content=claim.text[:500],
+            node_type=claim.claim_type,
+            source_id=paper_node_id,
+            relation_type="extracted_from",
+            tags=claim_tags,
+            metadata={
+                "project_id": project_id,
+                "source_paper": paper_title,
+                "confidence": claim.confidence,
+                "section": claim.source_section,
+                "page": claim.page_number,
+            },
+            check_contradictions=True,
+        )
+        claim_ids.append(claim_id)
+
+    contradictions = max(0, _superseded_count(ctxflow) - superseded_before)
+
+    return PaperIngestResponse(
+        success=True,
+        paper_node_id=paper_node_id,
+        claim_node_ids=claim_ids,
+        contradictions_found=contradictions,
+        project_id=project_id,
+        message=(
+            f"Ingested PDF '{paper_title}' with {len(claim_ids)} claims."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
