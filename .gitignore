@@ -8,3 +8,5 @@ graphify-out/
 .cache/
 .vscode/
 .venv
+build/
+dist/

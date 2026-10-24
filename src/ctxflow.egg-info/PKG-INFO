@@ -1,24 +1,42 @@
 Metadata-Version: 2.4
 Name: ctxflow
-Version: 0.1.0
-Summary: Schema-agnostic, incrementally-built context graph for LLM agent memory
+Version: 0.2.0
+Summary: Schema-agnostic, incrementally-built context graph for LLM agent memory — with ResearchOS multi-agent layer
 License: MIT
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: networkx>=3.0
 Requires-Dist: asyncpg>=0.29.0
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: pydantic>=2.0
 Provides-Extra: nlp
 Requires-Dist: spacy>=3.0; extra == "nlp"
 Provides-Extra: binary
 Requires-Dist: msgpack>=1.0; extra == "binary"
 Provides-Extra: llm
 Requires-Dist: openai>=1.0; extra == "llm"
-Requires-Dist: python-dotenv>=1.0; extra == "llm"
+Provides-Extra: researchos
+Requires-Dist: fastapi>=0.110; extra == "researchos"
+Requires-Dist: uvicorn[standard]>=0.29; extra == "researchos"
+Requires-Dist: httpx>=0.27; extra == "researchos"
+Requires-Dist: pymupdf>=1.24; extra == "researchos"
+Requires-Dist: sse-starlette>=2.0; extra == "researchos"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
 Provides-Extra: all
-Requires-Dist: ctxflow[binary,dev,nlp]; extra == "all"
+Requires-Dist: spacy>=3.0; extra == "all"
+Requires-Dist: msgpack>=1.0; extra == "all"
+Requires-Dist: openai>=1.0; extra == "all"
+Requires-Dist: fastapi>=0.110; extra == "all"
+Requires-Dist: uvicorn[standard]>=0.29; extra == "all"
+Requires-Dist: httpx>=0.27; extra == "all"
+Requires-Dist: pymupdf>=1.24; extra == "all"
+Requires-Dist: sse-starlette>=2.0; extra == "all"
+Requires-Dist: pytest>=7.0; extra == "all"
+Requires-Dist: pytest-cov>=4.0; extra == "all"
+Requires-Dist: pytest-asyncio>=0.23; extra == "all"
 
 # CtxFlow
 
@@ -141,3 +159,79 @@ neighbors = await store.neighbors(result.memory_ids[0], depth=2)
 tokenizers, and the PostgreSQL driver are intentionally adapter boundaries;
 `HashEmbedder` and `SimpleTokenizer` provide deterministic development
 fallbacks without requiring a model server or database in CI.
+
+For the PostgreSQL-backed event path, place `DB_HOST`, `DB_PORT`, `DB_NAME`,
+`DB_USER`, and `DB_PASSWORD` in the project-root `.env` file. The runtime reads
+these values separately and owns the pool lifecycle:
+
+```python
+from ctxflow.memory import PostgresMemoryRuntime
+
+async with await PostgresMemoryRuntime.create() as runtime:
+    result = await runtime.ingestor.ingest(event)
+```
+
+---
+
+## ResearchOS — multi-agent research workspace
+
+`src/researchos/` is the application layer from the FYP proposal: four
+agents (Retriever → Reader → Synthesizer → Critic), four schema-registered
+skills, a FastAPI backend, a bundled Research Trace UI, and an evaluation
+harness with two flat-RAG baselines.
+
+### Install and run
+
+```bash
+pip install -e ".[researchos]"
+researchos-api
+# or: python -m researchos.api.main
+```
+
+Open <http://127.0.0.1:8000>. The workspace exposes:
+
+| Area | Endpoint |
+|---|---|
+| Workspace UI / Research Trace | `GET /` |
+| Health & graph stats | `GET /health` |
+| Agent chat (SSE also at `/api/stream`) | `POST /api/chat` |
+| Paper ingestion (metadata + abstract) | `POST /api/papers/ingest` |
+| PDF ingestion (Paper Reader skill) | `POST /api/papers/upload` |
+| Researcher notes | `POST/GET /api/notes` |
+| Graph data / stats | `GET /api/graph/data`, `GET /api/graph/stats` |
+| Research Trace | `POST /api/trace` |
+| Skill discovery | `GET /api/skills` |
+| OpenAPI docs | `GET /docs` |
+
+The UI is dependency-free (vanilla JS/SVG) and ships inside the wheel, so
+it needs no npm build. Clicking a citation or graph node opens the
+Research Trace panel: provenance chain, superseded claims, contradictions,
+and source papers.
+
+### Evaluation
+
+```bash
+researchos-eval
+# or: python -m researchos.eval --json --out benchmark-report.json
+```
+
+The harness compares:
+
+1. **CtxFlow graph + four agents** (`ctxflow_graph`)
+2. **Baseline A** — flat vector retrieval, single agent (`flat_rag`)
+3. **Baseline B** — flat vector retrieval, four-agent pipeline
+   (`flat_rag_multi_agent`)
+
+Metrics: answer accuracy, supersession-defence rate, provenance accuracy,
+and estimated prompt tokens per query. The flat baselines use a deterministic
+hashed bag-of-words embedder so the benchmark runs offline; swap in a real
+embedding model via `researchos.eval.baselines.HashingEmbedder`-compatible
+objects when available.
+
+### ResearchOS tests
+
+```bash
+pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
+       tests/test_workspace_api.py tests/test_eval_harness.py
+```
+
