@@ -9,3 +9,8 @@ build/
 dist/
 .coverage
 htmlcov/
+graphify-out/
+.agents/
+.cache/
+.vscode/
+.venv

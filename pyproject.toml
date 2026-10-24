@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ctxflow"
-version = "0.1.0"
-description = "Schema-agnostic, incrementally-built context graph for LLM agent memory"
+version = "0.2.0"
+description = "Schema-agnostic, incrementally-built context graph for LLM agent memory — with ResearchOS multi-agent layer"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -22,11 +22,19 @@ dependencies = [
 nlp = ["spacy>=3.0"]
 binary = ["msgpack>=1.0"]
 llm = ["openai>=1.0"]
+researchos = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pymupdf>=1.24",
+    "sse-starlette>=2.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "pytest-asyncio>=0.23",
 ]
-all = ["ctxflow[nlp,binary,dev]"]
+all = ["ctxflow[nlp,binary,llm,researchos,dev]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -38,4 +46,5 @@ addopts = "-v"
 markers = [
     "postgres: tests that use the configured real PostgreSQL database",
     "integration: end-to-end memory pipeline integration tests",
+    "researchos: tests for the ResearchOS agent/skill layer",
 ]
