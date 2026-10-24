@@ -123,6 +123,8 @@ class LLMExtractor(Extractor):
         fallback: Optional[Extractor] = None,
         cache: Optional[ExtractionCache] = None,
         extraction_retries: int = 2,
+        model_version: str = "default",
+        prompt_version: str = "v1",
     ) -> None:
         self._llm = llm
         self.max_tags = max_tags
@@ -131,18 +133,24 @@ class LLMExtractor(Extractor):
         if extraction_retries < 0:
             raise ValueError("extraction_retries must be >= 0")
         self.extraction_retries = extraction_retries
+        self.model_version = model_version
+        self.prompt_version = prompt_version
 
     # -- Extractor interface ------------------------------------------------
 
     def extract_tags(self, text: str) -> Set[str]:
         """Extract semantic tags using the LLM."""
         try:
-            cached = self._cache.get(extraction_key("tags", text)) if self._cache is not None else None
+            key = extraction_key(
+                "tags", text, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
+            cached = self._cache.get(key) if self._cache is not None else None
             tags = cached if cached is not None else self._parse_tag_response(
                 self._llm(text, system=_TAG_SYSTEM)
             )
             if self._cache is not None and cached is None:
-                self._cache.set(extraction_key("tags", text), tags)
+                self._cache.set(key, tags)
             return set(tags[: self.max_tags])
         except Exception:
             logger.warning("LLM tag extraction failed, using fallback", exc_info=True)
@@ -155,7 +163,10 @@ class LLMExtractor(Extractor):
     def summarize(self, text: str) -> str:
         """Produce an abstractive summary using the LLM."""
         try:
-            key = extraction_key("summary", text)
+            key = extraction_key(
+                "summary", text, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
             summary = self._cache.get(key) if self._cache is not None else None
             if summary is None:
                 summary = self._llm(text, system=_SUMMARY_SYSTEM)
@@ -182,7 +193,10 @@ class LLMExtractor(Extractor):
         combined = "\n\n".join(parts)
 
         try:
-            key = extraction_key("multi_summary", combined)
+            key = extraction_key(
+                "multi_summary", combined, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
             summary = self._cache.get(key) if self._cache is not None else None
             if summary is None:
                 summary = self._llm(combined, system=_MULTI_SUMMARY_SYSTEM)
@@ -212,7 +226,13 @@ class LLMExtractor(Extractor):
         Invalid LLM output falls back to one raw-message memory.
         """
 
-        cache_key = event_extraction_key(event_hash) if event_hash else None
+        cache_key = (
+            event_extraction_key(
+                event_hash, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
+            if event_hash else None
+        )
         if self._cache is not None and cache_key is not None:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -225,7 +245,7 @@ class LLMExtractor(Extractor):
                 if self._cache is not None and cache_key is not None:
                     self._cache.set(cache_key, [item.model_dump() for item in extracted])
                 return extracted
-            except (ValueError, TypeError, ValidationError, json.JSONDecodeError):
+            except Exception:
                 if attempt < self.extraction_retries:
                     logger.warning(
                         "Atomic memory extraction attempt %d failed; retrying",

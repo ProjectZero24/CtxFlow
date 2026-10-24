@@ -14,14 +14,13 @@ dependencies = [
     "asyncpg>=0.29.0",
     "python-dotenv>=1.0",
     "pydantic>=2.0",
-    "openai>=1.0",
-    "sentence-transformers>=3.0",
 ]
 
 [project.optional-dependencies]
 nlp = ["spacy>=3.0"]
 binary = ["msgpack>=1.0"]
 llm = ["openai>=1.0"]
+local-embeddings = ["sentence-transformers>=3.0"]
 researchos = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -34,7 +33,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-asyncio>=0.23",
 ]
-all = ["ctxflow[nlp,binary,llm,researchos,dev]"]
+all = ["ctxflow[nlp,binary,llm,local-embeddings,researchos,dev]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

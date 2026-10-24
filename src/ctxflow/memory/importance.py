@@ -28,7 +28,9 @@ class ImportanceWeights:
 
 
 def _normalize(value: float, maximum: float) -> float:
-    return min(1.0, max(0.0, value / maximum)) if maximum else 0.0
+    if maximum <= 0:
+        return 0.0
+    return min(1.0, max(0.0, value) / maximum)
 
 
 def score_importance(
@@ -37,6 +39,7 @@ def score_importance(
     task_relevance: float = 0.0,
     dependent_count: int = 0,
     max_access_count: int = 1,
+    max_dependent_count: int = 1,
     novelty: float = 0.0,
     weights: ImportanceWeights | None = None,
 ) -> float:
@@ -49,7 +52,7 @@ def score_importance(
         selected.task_relevance * max(0.0, min(1.0, task_relevance))
         + selected.frequency * _normalize(memory.access_count, max_access_count)
         + selected.user_explicitness * explicit
-        + selected.dependent_count * _normalize(dependent_count, max(1, dependent_count))
+        + selected.dependent_count * _normalize(dependent_count, max_dependent_count)
         + selected.novelty * max(0.0, min(1.0, novelty))
     )
     memory.importance = max(0.0, min(1.0, score))

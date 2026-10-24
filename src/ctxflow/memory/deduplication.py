@@ -42,12 +42,15 @@ def find_duplicates(
 
     if not 0 <= threshold <= 1:
         raise ValueError("threshold must be between 0 and 1")
-    matches = [
-        DuplicateMatch(memory.id, similarity(candidate, memory))
-        for memory in existing
-        if memory.id != candidate.id and similarity(candidate, memory) > threshold
-        and (not same_type or memory.memory_type == candidate.memory_type)
-    ]
+    matches: list[DuplicateMatch] = []
+    for memory in existing:
+        if memory.id == candidate.id or (
+            same_type and memory.memory_type != candidate.memory_type
+        ):
+            continue
+        score = similarity(candidate, memory)
+        if score >= threshold:
+            matches.append(DuplicateMatch(memory.id, score))
     return sorted(matches, key=lambda item: (-item.similarity, item.memory_id))
 
 

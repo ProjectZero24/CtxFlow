@@ -104,7 +104,7 @@ def test_real_postgres_memory_and_ingestion_path():
             assert len(history) == 1
             assert history[0].version == 1
 
-            new_vector = [1.0] + [0.0] * 127
+            new_vector = [1.0] + [0.0] * 383
             assert await store.create_version(
                 memory_id,
                 "updated PostgreSQL memory",

@@ -30,14 +30,25 @@ class InMemoryExtractionCache:
         return len(self._values)
 
 
-def extraction_key(operation: str, text: str) -> str:
+def extraction_key(
+    operation: str,
+    text: str,
+    *,
+    model_version: str = "default",
+    prompt_version: str = "v1",
+) -> str:
     """Build a stable key from the event payload and extraction operation."""
 
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return f"{operation}:{digest}"
+    return f"{operation}:{model_version}:{prompt_version}:{digest}"
 
 
-def event_extraction_key(event_hash: str) -> str:
+def event_extraction_key(
+    event_hash: str,
+    *,
+    model_version: str = "default",
+    prompt_version: str = "v1",
+) -> str:
     """Build the cache key for all atomic memories extracted from an event."""
 
-    return f"atomic:{event_hash}"
+    return f"atomic:{model_version}:{prompt_version}:{event_hash}"

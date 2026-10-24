@@ -121,12 +121,13 @@ tokenizers, and the PostgreSQL driver are intentionally adapter boundaries;
 fallbacks without requiring a model server or database in CI.
 
 Each ingested memory is classified, embedded, token-counted, importance-scored,
-and checked for duplicate links before persistence. An `LLMEdgeProposer` can be
-passed to `EventIngestor` when semantic graph edges are desired; its proposals
-are persisted in the same transaction as the memories.
+and checked for duplicate links before persistence. An `LLMEdgeProposer` can be passed to `EventIngestor` when semantic graph edges
+are desired. Core memories and deterministic edges are persisted atomically;
+LLM-proposed edges are added in a separate post-commit enrichment step so
+provider failures cannot roll back committed ingestion.
 
 Deduplication retrieves at most five same-type ANN candidates, then applies a
-strict cosine similarity threshold of `> 0.95`. A qualifying candidate is
+cosine similarity threshold of `>= 0.95`. A qualifying candidate is
 treated as the canonical memory: the new memory is retained, a `duplicate_of`
 edge is added, and the canonical memory's access count and importance are
 updated. PostgreSQL uses the `memories_embedding_hnsw_idx` pgvector HNSW index
@@ -137,10 +138,16 @@ For the PostgreSQL-backed event path, place `DB_HOST`, `DB_PORT`, `DB_NAME`,
 `DB_USER`, `DB_PASSWORD`, and optionally `GROQ_API_KEY` in the project-root
 `.env` file. Groq uses the `openai/gpt-oss-20b` model for structured memory
 extraction and graph edge proposals. No embedding API key is required.
+Provider behavior can be configured through `create_groq_extractor`,
+`create_groq_edge_proposer`, and `PostgresMemoryRuntime.create`, including the
+LLM request timeout, extraction retries, ingestion provider timeout, and
+ingestion provider retries.
 
 CtxFlow uses one embedding implementation: the local
 `BAAI/bge-small-en-v1.5` Sentence Transformers model. It produces normalized
-384-dimensional vectors for both stored memories and retrieval queries, and
+384-dimensional vectors for both stored memories and retrieval queries. This
+replaces the earlier 128-dimensional embedding configuration; existing
+databases must run the migration and re-embedding process below. It
 does not make embedding API calls during inference after the model is cached.
 The first initialization may download the model into the Sentence Transformers
 cache; verify it locally with:
@@ -159,9 +166,13 @@ stored memory/version text. The script updates only embedding columns and
 `embedding_model`; memories, IDs, versions, provenance, graph edges, and
 ingestion events are preserved.
 
-For normal local development, use the deterministic `HashEmbedder` explicitly
-in unit tests only. Runtime creation always uses the local BGE model unless an
-embedder is explicitly injected by a test.
+Runtime creation prefers the local BGE model. If the optional
+`sentence-transformers` dependency or the cached BGE model is unavailable,
+`PostgresMemoryRuntime.create()` automatically falls back to the deterministic
+384-dimensional `HashEmbedder` and logs a warning. The hash fallback is
+appropriate for development and availability, but it does not provide the
+same semantic quality as BGE. An explicitly supplied embedder is always used
+unchanged.
 
 ```python
 from ctxflow.memory import PostgresMemoryRuntime

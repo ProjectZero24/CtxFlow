@@ -40,14 +40,22 @@ class GroqLLM:
         model: str = GROQ_CHAT_MODEL,
         temperature: float = 0.0,
         max_tokens: int = 1024,
+        timeout: float = 30.0,
     ) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
         try:
             from openai import OpenAI
         except ImportError as error:
             raise RuntimeError(
                 "The Groq adapter requires the 'openai' package"
             ) from error
-        self._client = OpenAI(api_key=_api_key(api_key), base_url=base_url)
+        self._client = OpenAI(
+            api_key=_api_key(api_key),
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+        )
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -92,11 +100,21 @@ def create_groq_extractor(
     api_key: str | None = None,
     cache: Any | None = None,
     extraction_retries: int = 2,
+    timeout: float = 30.0,
+    model: str = GROQ_CHAT_MODEL,
+    temperature: float = 0.0,
+    max_tokens: int = 1024,
 ) -> LLMExtractor:
     """Build an extractor backed by the configured Groq chat model."""
 
     return LLMExtractor(
-        GroqLLM(api_key=api_key),
+        GroqLLM(
+            api_key=api_key,
+            timeout=timeout,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ),
         cache=cache,
         extraction_retries=extraction_retries,
     )
@@ -106,7 +124,20 @@ def create_groq_edge_proposer(
     *,
     api_key: str | None = None,
     threshold: float = 0.7,
+    timeout: float = 30.0,
+    model: str = GROQ_CHAT_MODEL,
+    temperature: float = 0.0,
+    max_tokens: int = 1024,
 ) -> LLMEdgeProposer:
     """Build an edge proposer backed by the configured Groq chat model."""
 
-    return LLMEdgeProposer(GroqLLM(api_key=api_key), threshold=threshold)
+    return LLMEdgeProposer(
+        GroqLLM(
+            api_key=api_key,
+            timeout=timeout,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ),
+        threshold=threshold,
+    )

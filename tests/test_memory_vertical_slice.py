@@ -1,6 +1,8 @@
 """Week 3-6 memory vertical-slice tests."""
 
 import asyncio
+import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -189,6 +191,68 @@ def test_ingestion_persists_successful_edge_proposal_after_core_records():
             Relation.RELATED_TO,
         ) in store.edges
         assert second.memory_ids[0] in store.provenance
+
+    asyncio.run(run())
+
+
+def test_ingestion_survives_access_recording_failure_and_does_not_replay():
+    async def run():
+        class FailingAccessStore(InMemoryMemoryStore):
+            def __init__(self):
+                super().__init__()
+                self.access_attempts = 0
+
+            async def record_access(self, memory_id):
+                self.access_attempts += 1
+                raise RuntimeError("access service unavailable")
+
+        store = FailingAccessStore()
+        ingestor = EventIngestor(store, HashEmbedder(dimension=16))
+        await ingestor.ingest(
+            Event("access-1", "s1", datetime.now(timezone.utc), "user", "Fact: durable")
+        )
+        result = await ingestor.ingest(
+            Event("access-2", "s1", datetime.now(timezone.utc), "user", "Fact: durable")
+        )
+
+        assert result.memory_ids
+        assert len(store.memories) == 2
+        replay = await ingestor.ingest(
+            Event("access-2", "s1", datetime.now(timezone.utc), "user", "Fact: durable")
+        )
+        assert replay.duplicate is True
+        assert store.access_attempts == 1
+
+    asyncio.run(run())
+
+
+def test_ingestion_runs_blocking_extraction_off_loop_and_falls_back_on_timeout():
+    async def run():
+        loop_thread = threading.get_ident()
+        provider_threads = []
+
+        class SlowExtractor:
+            def extract_atomic_memories(self, text, *, event_hash):
+                provider_threads.append(threading.get_ident())
+                time.sleep(0.05)
+                return []
+
+        store = InMemoryMemoryStore()
+        ingestor = EventIngestor(
+            store,
+            HashEmbedder(dimension=16),
+            SlowExtractor(),
+            provider_timeout=0.01,
+            provider_retries=0,
+        )
+        result = await ingestor.ingest(
+            Event("timeout-1", "s1", datetime.now(timezone.utc), "user", "Keep this")
+        )
+
+        assert result.memory_ids
+        assert store.memories[result.memory_ids[0]].text == "Keep this"
+        assert provider_threads
+        assert provider_threads[0] != loop_thread
 
     asyncio.run(run())
 

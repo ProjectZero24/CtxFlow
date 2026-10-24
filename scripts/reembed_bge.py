@@ -32,6 +32,8 @@ def _database_values(path: Path) -> dict[str, str]:
 
 async def _run(dotenv_path: Path, batch_size: int) -> None:
     embedder = LocalBGEEmbedder(local_files_only=True)
+    if embedder.model != BGE_MODEL_NAME or embedder.dimension != 384:
+        raise RuntimeError("Local embedding model cache is not the expected BGE Small 384 model")
     config = _database_values(dotenv_path)
     connection = await asyncpg.connect(
         host=config["DB_HOST"],
@@ -60,26 +62,37 @@ async def _run(dotenv_path: Path, batch_size: int) -> None:
         )
         memory_vectors = await _encode_rows(embedder, memories, batch_size)
         version_vectors = await _encode_rows(embedder, versions, batch_size)
+        if len(memory_vectors) != len(memories) or len(version_vectors) != len(versions):
+            raise RuntimeError("Embedding model returned an incomplete result")
         async with connection.transaction():
             for row, vector in zip(memories, memory_vectors):
-                await connection.execute(
+                status = await connection.execute(
                     "UPDATE memories SET embedding=$2::vector, embedding_model=$3 WHERE id=$1",
                     row["id"], _vector(vector), BGE_MODEL_NAME,
                 )
+                if status != "UPDATE 1":
+                    raise RuntimeError(f"Failed to update embedding for memory {row['id']}")
             for row, vector in zip(versions, version_vectors):
-                await connection.execute(
+                status = await connection.execute(
                     """UPDATE memory_versions SET embedding=$3::vector
                     WHERE memory_id=$1 AND version=$2""",
                     row["memory_id"], row["version"], _vector(vector),
                 )
-        remaining = await connection.fetchval(
-            "SELECT COUNT(*) FROM memories WHERE embedding IS NULL"
-        )
-        remaining_versions = await connection.fetchval(
-            "SELECT COUNT(*) FROM memory_versions WHERE embedding IS NULL"
-        )
-        if remaining or remaining_versions:
-            raise RuntimeError("Re-embedding completed with NULL vectors")
+                if status != "UPDATE 1":
+                    raise RuntimeError(
+                        f"Failed to update embedding for {row['memory_id']} version {row['version']}"
+                    )
+            remaining = await connection.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE embedding IS NULL"
+            )
+            remaining_versions = await connection.fetchval(
+                "SELECT COUNT(*) FROM memory_versions WHERE embedding IS NULL"
+            )
+            if remaining or remaining_versions:
+                raise RuntimeError(
+                    "Re-embedding left NULL vectors; transaction rolled back "
+                    f"(memories={remaining}, versions={remaining_versions})"
+                )
         print(
             f"reembedded_memories={len(memories)} "
             f"reembedded_versions={len(versions)} model={BGE_MODEL_NAME} dimension=384"

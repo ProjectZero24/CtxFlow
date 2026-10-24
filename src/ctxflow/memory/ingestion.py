@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -74,6 +75,8 @@ class EventIngestor:
         edge_proposer: LLMEdgeProposer | None = None,
         duplicate_threshold: float = DEFAULT_DUPLICATE_THRESHOLD,
         importance_weights: ImportanceWeights | None = None,
+        provider_timeout: float = 30.0,
+        provider_retries: int = 2,
     ) -> None:
         if not 0 <= duplicate_threshold <= 1:
             raise ValueError("duplicate_threshold must be between 0 and 1")
@@ -84,6 +87,12 @@ class EventIngestor:
         self.edge_proposer = edge_proposer
         self.duplicate_threshold = duplicate_threshold
         self.importance_weights = importance_weights
+        if provider_timeout <= 0:
+            raise ValueError("provider_timeout must be positive")
+        if provider_retries < 0:
+            raise ValueError("provider_retries must be >= 0")
+        self.provider_timeout = provider_timeout
+        self.provider_retries = provider_retries
         self._seen: dict[str, list[str]] = {}
         self._last_by_session: dict[str, str] = {}
         self._events: dict[str, Event] = {}
@@ -120,7 +129,6 @@ class EventIngestor:
                 entities=list(item.entities),
             ))
             count_tokens(memories[-1], self.tokenizer)
-            score_importance(memories[-1], weights=self.importance_weights)
         parent = self._last_by_session.get(event.session_id)
         previous_ids = [parent] + [memory.id for memory in memories[:-1]]
         edges = [
@@ -138,6 +146,15 @@ class EventIngestor:
                 edges.append(Edge(*duplicate_edge(memory.id, canonical)))
             if self.edge_proposer is not None:
                 edge_candidates.append((memory, await self._retrieval_candidates(memory)))
+        for memory in memories:
+            score_importance(
+                memory,
+                task_relevance=1.0 if event.tool_name else 0.5,
+                dependent_count=sum(edge.src == memory.id for edge in edges),
+                max_dependent_count=max(1, len(edges)),
+                novelty=1.0,
+                weights=self.importance_weights,
+            )
         provenances = [
             Provenance(
                 memory_id=memory.id,
@@ -176,12 +193,22 @@ class EventIngestor:
         self._last_by_session[event.session_id] = memories[-1].id
         for match in canonical_matches:
             if match is not None:
-                await self.store.record_access(match.memory_id)
+                record_access = getattr(self.store, "record_access", None)
+                if record_access is not None:
+                    try:
+                        await record_access(match.memory_id)
+                    except Exception:
+                        _LOGGER.exception(
+                            "Access recording failed after persistence for memory_id=%s",
+                            match.memory_id,
+                        )
         edge_enrichment_failed = False
         if self.edge_proposer is not None:
             for memory, candidates in edge_candidates:
                 try:
-                    proposed = self.edge_proposer.propose(memory, candidates)
+                    proposed = await self._provider_call(
+                        self.edge_proposer.propose, memory, candidates
+                    )
                     for edge in proposed:
                         await self._add_edge(edge)
                 except Exception:
@@ -205,8 +232,35 @@ class EventIngestor:
         extract = getattr(self.extractor, "extract_atomic_memories", None)
         if extract is None:
             raise TypeError("extractor must provide extract_atomic_memories")
-        extracted = list(extract(event.content, event_hash=event_hash))
+        try:
+            extracted = list(await self._provider_call(
+                extract, event.content, event_hash=event_hash
+            ))
+        except Exception:
+            _LOGGER.exception(
+                "Memory extraction failed; preserving the raw event as a memory"
+            )
+            extracted = []
         return extracted or [self._raw_memory(event)]
+
+    async def _provider_call(self, call: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run synchronous providers off-loop with a timeout and bounded retries."""
+
+        for attempt in range(self.provider_retries + 1):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(call, *args, **kwargs),
+                    timeout=self.provider_timeout,
+                )
+            except Exception:
+                if attempt == self.provider_retries:
+                    raise
+                _LOGGER.warning(
+                    "Provider call failed; retrying attempt %d/%d",
+                    attempt + 1,
+                    self.provider_retries,
+                    exc_info=True,
+                )
 
     def _raw_memory(self, event: Event) -> Any:
         return SimpleNamespace(

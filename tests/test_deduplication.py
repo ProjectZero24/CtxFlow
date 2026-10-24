@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from ctxflow.memory import Event, EventIngestor, HashEmbedder, InMemoryMemoryStore
 from ctxflow.memory.deduplication import find_duplicates
+import ctxflow.memory.deduplication as deduplication
 from ctxflow.memory.store import Memory, MemoryType
 
 
@@ -13,6 +14,23 @@ def test_find_duplicates_defaults_to_initial_threshold_and_same_type():
 
     assert find_duplicates(candidate, [near])
     assert not find_duplicates(candidate, [other_type])
+
+
+def test_find_duplicates_includes_threshold_and_calculates_similarity_once(monkeypatch):
+    candidate = Memory("candidate", memory_type=MemoryType.FACT, embedding=[1.0, 0.0])
+    existing = Memory("existing", memory_type=MemoryType.FACT, embedding=[1.0, 0.0])
+    calls = 0
+
+    def counted_similarity(left, right):
+        nonlocal calls
+        calls += 1
+        return 0.95
+
+    monkeypatch.setattr(deduplication, "similarity", counted_similarity)
+    matches = find_duplicates(candidate, [existing], threshold=0.95)
+
+    assert [match.memory_id for match in matches] == [existing.id]
+    assert calls == 1
 
 
 def test_ingestion_uses_top_five_same_type_ann_candidates():

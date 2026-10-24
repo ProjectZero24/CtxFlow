@@ -45,6 +45,54 @@ def test_atomic_extraction_falls_back_to_raw_message_after_retries():
     ]
 
 
+def test_atomic_cache_version_change_causes_a_miss():
+    calls = 0
+
+    def llm(_prompt, system=""):
+        nonlocal calls
+        calls += 1
+        return '[{"text":"Versioned","type":"fact"}]'
+
+    cache = InMemoryExtractionCache()
+    first = LLMExtractor(llm, cache=cache, model_version="model-1")
+    second = LLMExtractor(llm, cache=cache, model_version="model-2")
+    third = LLMExtractor(llm, cache=cache, prompt_version="v2")
+
+    first.extract_atomic_memories("same", event_hash="event-1")
+    first.extract_atomic_memories("same", event_hash="event-1")
+    second.extract_atomic_memories("same", event_hash="event-1")
+    third.extract_atomic_memories("same", event_hash="event-1")
+
+    assert calls == 3
+
+
+def test_atomic_extraction_falls_back_after_network_failure():
+    calls = 0
+
+    def llm(_prompt, system=""):
+        nonlocal calls
+        calls += 1
+        raise OSError("network unavailable")
+
+    extractor = LLMExtractor(llm, extraction_retries=1)
+    result = extractor.extract_atomic_memories("Keep this message.")
+
+    assert calls == 2
+    assert [(item.text, item.type) for item in result] == [
+        ("Keep this message.", "conversation")
+    ]
+
+
+def test_atomic_extraction_falls_back_after_empty_response():
+    extractor = LLMExtractor(lambda _prompt, system="": "")
+
+    result = extractor.extract_atomic_memories("Keep this message.")
+
+    assert [(item.text, item.type) for item in result] == [
+        ("Keep this message.", "conversation")
+    ]
+
+
 def test_ingestion_persists_multiple_atomic_memories():
     def llm(_prompt, system=""):
         return (

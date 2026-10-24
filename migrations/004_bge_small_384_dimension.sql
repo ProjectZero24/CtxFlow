@@ -5,6 +5,7 @@
 -- Run scripts/reembed_bge.py after this migration to regenerate vectors from
 -- the stored memory/version text.
 BEGIN;
+LOCK TABLE memories IN SHARE UPDATE EXCLUSIVE MODE;
 
 CREATE TABLE IF NOT EXISTS ctxflow_embedding_migration_backup (
     source_table TEXT NOT NULL,
