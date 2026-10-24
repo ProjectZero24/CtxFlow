@@ -10,3 +10,7 @@ graphify-out/
 .venv
 build/
 dist/
+
+# scratch notes
+s52_fixed.txt
+test456.txt
