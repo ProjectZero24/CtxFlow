@@ -13,6 +13,9 @@ dependencies = [
     "networkx>=3.0",
     "asyncpg>=0.29.0",
     "python-dotenv>=1.0",
+    "pydantic>=2.0",
+    "openai>=1.0",
+    "sentence-transformers>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -34,4 +37,5 @@ testpaths = ["tests"]
 addopts = "-v"
 markers = [
     "postgres: tests that use the configured real PostgreSQL database",
+    "integration: end-to-end memory pipeline integration tests",
 ]

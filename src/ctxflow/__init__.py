@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ctxflow.contradiction import ContradictionDetector, LLMCallable
+from ctxflow.extraction_cache import ExtractionCache, InMemoryExtractionCache
 from ctxflow.extractors import DefaultExtractor, Extractor
 from ctxflow.governance import GovernanceEngine
 from ctxflow.graph import ContextGraph
@@ -58,6 +59,8 @@ __all__ = [
     "DefaultExtractor",
     "LLMExtractor",
     "ContradictionDetector",
+    "ExtractionCache",
+    "InMemoryExtractionCache",
 ]
 
 
@@ -393,4 +396,3 @@ class CtxFlow:
 
     def __len__(self) -> int:
         return self._graph.node_count
-

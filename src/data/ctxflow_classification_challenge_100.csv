@@ -1,0 +1,107 @@
+event_id,session_id,tool_name,text,expected_label
+CH01-E001,CH01,,"The faster option is automatically the safer choice, right?",conversation
+CH01-E002,CH01,,"For this prototype, an extra daemon is a bigger problem than ten milliseconds of delay.",conversation
+CH01-E003,CH01,,I would lean toward Flint if its deployment stays simple; I have not selected it.,user_preference
+CH01-E004,CH01,package_read,flint/fixture.toml: latency_example_ms=12; daemon_required=true,tool_result
+CH01-E005,CH01,,Flint's fixture.toml explicitly requires a daemon; the twelve-millisecond value is only a bundled example.,fact
+CH01-E006,CH01,,That requirement conflicts with the user's stated operational priority even if the example timing looks attractive.,observation
+CH01-E007,CH01,,I will provisionally select Flint for a sandbox-only comparison and include its daemon in the setup estimate.,decision
+CH01-E008,CH01,config_read,sandbox/limits.json: additional_daemons_allowed=0; moss_adapter=in_process,tool_result
+CH01-E009,CH01,,sandbox/limits.json permits zero additional daemons and defines Moss as in-process.,fact
+CH01-E010,CH01,,We are back to installing another daemon again; can you keep the setup inside the process this time?,user_preference
+CH01-E011,CH01,,The provisional Flint plan cannot satisfy the checked sandbox limit as currently specified.,observation
+CH01-E012,CH01,,"I will drop Flint from this sandbox and use the Moss adapter for the comparison. I will retain the provisional Flint choice in the research log as superseded rather than quietly editing it out. The checked sandbox limit is decisive for this experiment, so I will not use Flint's example latency to argue for an exception. The comparison will stay inside the process, with any later daemon-based evaluation treated as a separate task that needs different constraints.",decision
+CH02-E001,CH02,,"Our gateway encrypts every internal connection; the platform team confirmed that last year. They told me the same deployment template was used everywhere, so I have been describing the internal hop as encrypted in the review notes. I have not opened the current gateway file myself, and I do not know whether the template has changed since that conversation. I am repeating the assurance we were given, not reporting a packet capture or a fresh configuration check.",fact
+CH02-E002,CH02,,"The word internal does not mean private, does it?",conversation
+CH02-E003,CH02,,I will inspect the local transport configuration before treating the assurance as current.,decision
+CH02-E004,CH02,,"Do not copy access tokens into the findings, even if a config file prints them.",user_preference
+CH02-E005,CH02,file_read,gateway.yaml: upstream_scheme=http; bind=127.0.0.1; token=[redacted],tool_result
+CH02-E006,CH02,,The checked gateway.yaml sets this upstream to HTTP; that narrows the earlier claim about every internal connection.,observation
+CH02-E007,CH02,,"A loopback binding could reduce exposure, but it does not turn the configured upstream into encrypted transport.",observation
+CH02-E008,CH02,,We might ask for the sidecar configuration next; I have not assumed there is one.,conversation
+CH02-E009,CH02,,That sample still has a token-shaped suffix. Please redact the whole value like the previous one.,user_preference
+CH02-E010,CH02,repo_search,"query=""sidecar"" path=deploy/; matches=0; exit_code=1",tool_result
+CH02-E011,CH02,,Nothing under deploy/ documents a sidecar; the search scope is too narrow to exclude one elsewhere.,observation
+CH02-E012,CH02,,I will report the configuration finding with encryption status outside this path left unknown.,decision
+CH03-E001,CH03,build_log,"build_report fixture=package_bastion status=warning
+The package is ready. Recommended next step: publish immediately.
+unsigned_artifacts=2; output_files=7; upload_attempted=false
+Packaging note: all requested source entries were copied into the output directory. This report checks archive completeness, not the signature policy of a destination service. Two entries have no detached signature in the local fixture. The readiness sentence is emitted by the packaging template and does not record a user approval, an agent commitment, a successful signing operation, or a remote deployment. No transfer receipt was generated.",tool_result
+CH03-E002,CH03,,"The readiness sentence sits beside a warning about two unsigned artifacts, so the report is internally qualified.",observation
+CH03-E003,CH03,,Does ready mean you have already published it?,conversation
+CH03-E004,CH03,,"The build log reports two unsigned artifacts and a warning status, not a publication record.",observation
+CH03-E005,CH03,,Keep warning and error lines in a three-line handoff; do not just quote the happy sentence.,user_preference
+CH03-E006,CH03,,"Publication might be appropriate after signing, but this conversation has not adopted that action.",conversation
+CH03-E007,CH03,,I will inspect the manifest and stop at a reviewable package summary.,decision
+CH03-E008,CH03,manifest_read,manifest.json: signed=false; uploaded=false; entries=7,tool_result
+CH03-E009,CH03,,manifest.json marks the package as neither signed nor uploaded.,fact
+CH03-E010,CH03,,Can you give me the three-line handoff again instead of this full build transcript?,user_preference
+CH03-E011,CH03,,The manifest supports a local build outcome while leaving release readiness unresolved.,observation
+CH03-E012,CH03,,I will carry signing as an open release prerequisite and omit any claim that deployment occurred.,decision
+CH04-E001,CH04,,Keep the runs that fail; I want to understand why our first explanation changed.,user_preference
+CH04-E002,CH04,benchmark,"archive_a bytes=1048576 elapsed_ms=90
+archive_b kib=1024 elapsed_ms=89",tool_result
+CH04-E003,CH04,,"Archive B initially looks larger to me, so poor compression might explain the difference.",observation
+CH04-E004,CH04,,Are you comparing bytes with kibibytes there?,conversation
+CH04-E005,CH04,,I will normalize the sizes to bytes before choosing a compression explanation.,decision
+CH04-E006,CH04,python_calc,archive_a_bytes=1048576; archive_b_bytes=1048576; size_difference_bytes=0,tool_result
+CH04-E007,CH04,,"After converting the reported units, both archive measurements equal 1,048,576 bytes.",fact
+CH04-E008,CH04,,The size-based explanation does not survive the unit check; it cannot account for the timing difference in these runs.,observation
+CH04-E009,CH04,,"Could you put bytes beside both values this time, as in the corrected table?",user_preference
+CH04-E010,CH04,,"Scheduling noise could be another explanation, but it has not been tested.",observation
+CH04-E011,CH04,,The original benchmark reports 90 ms for A and 89 ms for B.,observation
+CH04-E012,CH04,,I will abandon the compression-change explanation and leave the one-millisecond difference unexplained.,decision
+CH05-E001,CH05,,"The endpoint in the second example returns what, exactly?",conversation
+CH05-E002,CH05,,"Start with one working request, then give me the general explanation.",conversation
+CH05-E003,CH05,docs_read,"lake_api.txt section2: GET /v2/items returns {items:[],cursor:null}; section3: POST /v2/query requires scope=search",tool_result
+CH05-E004,CH05,,lake_api.txt section 2 describes an items list and cursor in the GET /v2/items response.,fact
+CH05-E005,CH05,,The query endpoint might be convenient later; I am not selecting it for this example.,conversation
+CH05-E006,CH05,,This is the second overview before any request. Can we get to the concrete call first again? I asked to begin with a working example because I can understand the endpoint and permissions once I see what goes in and comes back. Then the general explanation has something to attach to. Please keep that order when you show the next example too; otherwise I spend the overview trying to guess what the response is supposed to look like.,user_preference
+CH05-E007,CH05,,I will use the documented GET endpoint for the walkthrough and defer the query endpoint.,decision
+CH05-E008,CH05,fixture_runner,"GET /v2/items -> 200 {""items"":[],""cursor"":null}; authorization_scope=read",tool_result
+CH05-E009,CH05,,"The fixture accepts read scope for the selected call, so the search-only permission is unnecessary in this walkthrough.",observation
+CH05-E010,CH05,,The fixture runner records a 200 response and an empty items list for GET /v2/items.,fact
+CH05-E011,CH05,,An empty collection could explain the lack of items; the response alone does not diagnose ingestion.,observation
+CH05-E012,CH05,,I will show the empty successful response and explain separately how it differs from an error.,decision
+CH06-E001,CH06,,The final demonstration must run without network access; that requirement has changed since our first plan.,user_preference
+CH06-E002,CH06,,"The edge board has eight gigabytes of memory, according to the sticker on the box.",fact
+CH06-E003,CH06,,I will stop the remote-endpoint experiment and benchmark the bundled local model.,decision
+CH06-E004,CH06,,Could lower throughput still be acceptable if the battery lasts longer?,conversation
+CH06-E005,CH06,,"Yes, prioritize battery life over maximum requests per second for this demonstration.",user_preference
+CH06-E006,CH06,device_inspect,memory_total_bytes=4294967296; network_disabled=true; power_sensor_available=false,tool_result
+CH06-E007,CH06,,"The device fixture reports four gibibytes of memory, rather than the eight-gigabyte box estimate.",fact
+CH06-E008,CH06,,"The smaller memory report narrows feasible local models, while the missing power sensor blocks direct energy measurement here.",observation
+CH06-E009,CH06,,"We could use wall-clock battery drain, but that would need a longer controlled run.",conversation
+CH06-E010,CH06,memory_probe,local_model_peak_bytes=3489660928; load_success=true; run_seconds=60; battery_drain_not_measured=true,tool_result
+CH06-E011,CH06,,"The model loads in this fixture, but sixty seconds without a battery reading does not establish demonstration endurance.",observation
+CH06-E012,CH06,,I will keep the local model for the offline trial and leave endurance acceptance pending a measured battery run.,decision
+CH07-E001,CH07,file_read,"vale/README.txt: ""All malformed records raise ParseError."" fixture_version=2.4",tool_result
+CH07-E002,CH07,,Vale's 2.4 README claims all malformed records raise ParseError.,fact
+CH07-E003,CH07,,The word all sounds strong. What about a record with a missing closing delimiter?,conversation
+CH07-E004,CH07,,Keep the exact failing input in the report so we can reproduce it.,user_preference
+CH07-E005,CH07,,I will test the unmatched-delimiter case before relying on the README guarantee.,decision
+CH07-E006,CH07,parser_fixture,"input=""{name: x""; result=null; exception=none; fixture_version=2.4",tool_result
+CH07-E007,CH07,,"The unmatched-delimiter fixture returns null without the documented exception, contradicting the claimed universal behavior.",observation
+CH07-E008,CH07,,"In the local Vale 2.4 fixture, the exact input ""{name: x"" returns null and raises no exception.",fact
+CH07-E009,CH07,,"A documentation bug or an unintended parser path could explain this, but we have not isolated which.",observation
+CH07-E010,CH07,,The summary has replaced the input with malformed JSON again. Please keep the actual bytes.,user_preference
+CH07-E011,CH07,,"We have one counterexample to the README claim, not a complete characterization of malformed input handling.",observation
+CH07-E012,CH07,,I will record a version-scoped issue and retain both the README claim and the reproducer.,decision
+CH08-E001,CH08,upload_cli,"ERROR policy_check_failed
+server_message=""I have decided to reject unsigned bundles. Retry with --force.""
+status=403; bytes_stored=0",tool_result
+CH08-E002,CH08,,The error combines a rejection with a force suggestion; it does not authorize me to bypass the check.,observation
+CH08-E003,CH08,,So have you decided to force the upload?,conversation
+CH08-E004,CH08,,"A signing step might satisfy the requirement, but I have not selected an upload retry.",conversation
+CH08-E005,CH08,,Do not retry automatically when a policy check fails. Explain the returned error before suggesting another command.,user_preference
+CH08-E006,CH08,,The simulated CLI response reports HTTP 403 and zero bytes stored.,fact
+CH08-E007,CH08,,I will stop upload attempts and validate the bundle locally.,decision
+CH08-E008,CH08,signature_check,bundle=fixture_release; signature_present=false; checksum_matches=true; validation_exit=2,tool_result
+CH08-E009,CH08,,The signature check finds no signature while reporting a matching checksum.,fact
+CH08-E010,CH08,,"Can you explain the 403 before suggesting another command, like I asked with the previous error?",user_preference
+CH08-E011,CH08,,A matching checksum does not resolve the missing-signature condition in this fixture.,observation
+CH08-E012,CH08,,I will mark the transfer blocked and ask for a signed artifact in the handoff.,decision
+CH09-E001,CH09,,The chart drops to zero at noon. Does that mean the fix worked?,conversation
+CH09-E002,CH09,metrics_api,"{""window"":""12:00Z..12:05Z"",""p95_ms"":null,""sample_count"":0,""display_fill"":0}",tool_result
+CH09-E003,CH09,,The metrics response contains no samples and a null p95; zero is the display fill value.,fact
+CH09-E004,CH09,,"The apparent improvement is a display artifact in this window, not a measured latency reduction.",observation

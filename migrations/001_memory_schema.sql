@@ -24,7 +24,7 @@ CREATE TABLE memories (
     validity TEXT NOT NULL DEFAULT 'valid',
     archived BOOLEAN NOT NULL DEFAULT FALSE,
     entities TEXT[] NOT NULL DEFAULT '{}',
-    embedding VECTOR(128),
+    embedding VECTOR(384),
     embedding_model TEXT NOT NULL DEFAULT '',
     token_counts JSONB NOT NULL DEFAULT '{}'::jsonb
 );
@@ -33,7 +33,7 @@ CREATE TABLE memory_versions (
     memory_id TEXT NOT NULL REFERENCES memories(id),
     version INTEGER NOT NULL CHECK (version >= 1),
     text TEXT NOT NULL,
-    embedding VECTOR(128),
+    embedding VECTOR(384),
     created_at TIMESTAMPTZ NOT NULL,
     reason TEXT NOT NULL,
     supersedes_version INTEGER,

@@ -87,7 +87,7 @@ Run the full test suite with `pytest`:
 pytest tests
 ```
 
-## Memory vertical slice (Christo, weeks 3–6)
+## Memory vertical slice
 
 The `ctxflow.memory` package includes the production memory path while
 retaining the deterministic in-memory implementation for local tests:
@@ -120,9 +120,48 @@ tokenizers, and the PostgreSQL driver are intentionally adapter boundaries;
 `HashEmbedder` and `SimpleTokenizer` provide deterministic development
 fallbacks without requiring a model server or database in CI.
 
+Each ingested memory is classified, embedded, token-counted, importance-scored,
+and checked for duplicate links before persistence. An `LLMEdgeProposer` can be
+passed to `EventIngestor` when semantic graph edges are desired; its proposals
+are persisted in the same transaction as the memories.
+
+Deduplication retrieves at most five same-type ANN candidates, then applies a
+strict cosine similarity threshold of `> 0.95`. A qualifying candidate is
+treated as the canonical memory: the new memory is retained, a `duplicate_of`
+edge is added, and the canonical memory's access count and importance are
+updated. PostgreSQL uses the `memories_embedding_hnsw_idx` pgvector HNSW index
+for current-memory retrieval. Historical `as_of` searches use version rows and
+are not HNSW-indexed.
+
 For the PostgreSQL-backed event path, place `DB_HOST`, `DB_PORT`, `DB_NAME`,
-`DB_USER`, and `DB_PASSWORD` in the project-root `.env` file. The runtime reads
-these values separately and owns the pool lifecycle:
+`DB_USER`, `DB_PASSWORD`, and optionally `GROQ_API_KEY` in the project-root
+`.env` file. Groq uses the `openai/gpt-oss-20b` model for structured memory
+extraction and graph edge proposals. No embedding API key is required.
+
+CtxFlow uses one embedding implementation: the local
+`BAAI/bge-small-en-v1.5` Sentence Transformers model. It produces normalized
+384-dimensional vectors for both stored memories and retrieval queries, and
+does not make embedding API calls during inference after the model is cached.
+The first initialization may download the model into the Sentence Transformers
+cache; verify it locally with:
+
+```powershell
+python -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('BAAI/bge-small-en-v1.5'); print(m.get_sentence_embedding_dimension())"
+```
+
+The PostgreSQL schema must use `vector(384)` for both `memories.embedding` and
+`memory_versions.embedding`. Before applying
+`migrations/004_bge_small_384_dimension.sql`, take a database backup. The
+migration preserves old vectors in a backup table, changes the vector columns
+without truncating or padding, and rebuilds the HNSW index. Run
+`scripts/reembed_bge.py` immediately afterward to regenerate vectors from the
+stored memory/version text. The script updates only embedding columns and
+`embedding_model`; memories, IDs, versions, provenance, graph edges, and
+ingestion events are preserved.
+
+For normal local development, use the deterministic `HashEmbedder` explicitly
+in unit tests only. Runtime creation always uses the local BGE model unless an
+embedder is explicitly injected by a test.
 
 ```python
 from ctxflow.memory import PostgresMemoryRuntime
