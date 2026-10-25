@@ -197,6 +197,7 @@ def extract_sections_from_pdf(pdf_path: str) -> List[PaperSection]:
         if current_section.text.strip():
             sections.append(current_section)
 
+    page_count = doc.page_count
     doc.close()
 
     # Fallback: if no sections were detected, return full text as one section
@@ -205,7 +206,7 @@ def extract_sections_from_pdf(pdf_path: str) -> List[PaperSection]:
         sections = [PaperSection(
             title="Full Document",
             text=full_text,
-            page_numbers=list(range(doc.page_count if hasattr(doc, 'page_count') else 0)),
+            page_numbers=list(range(page_count)),
         )]
 
     return sections
@@ -250,6 +251,15 @@ class PaperReaderSkill:
         sections = extract_sections_from_pdf(pdf_path)
         full_text = extract_text_from_pdf(pdf_path)
 
+        page_count = len(sections)
+        try:
+            import fitz
+
+            with fitz.open(str(pdf_path)) as document:
+                page_count = document.page_count
+        except Exception:  # pragma: no cover - best-effort metadata
+            pass
+
         # Attempt to extract title from first section or first line
         title = ""
         if sections and sections[0].title != "Preamble":
@@ -263,7 +273,7 @@ class PaperReaderSkill:
             "title": title,
             "sections": sections,
             "full_text": full_text,
-            "page_count": len(sections),
+            "page_count": page_count,
         }
 
     def extract_claims(self, pdf_path: str) -> List[ExtractedClaim]:

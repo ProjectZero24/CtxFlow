@@ -11,7 +11,7 @@ import logging
 from enum import Enum
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +23,13 @@ logger = logging.getLogger(__name__)
 class SkillInputSchema(BaseModel):
     """JSON-Schema-compatible input descriptor for a skill."""
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class SkillOutputSchema(BaseModel):
     """JSON-Schema-compatible output descriptor for a skill."""
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class SkillSchema(BaseModel):
@@ -90,6 +88,76 @@ SkillCallable = Union[
     Callable[..., Any],
     Callable[..., Coroutine[Any, Any, Any]],
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lightweight JSON-Schema validation
+# ---------------------------------------------------------------------------
+
+_TYPE_CHECKS: Dict[str, tuple] = {
+    "object": (dict,),
+    "array": (list, tuple),
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "null": (type(None),),
+}
+
+
+def _matches_type(value: Any, expected: Any) -> bool:
+    """Return True when *value* matches a JSON-Schema ``type`` declaration."""
+    if isinstance(expected, list):
+        return any(_matches_type(value, item) for item in expected)
+    checks = _TYPE_CHECKS.get(str(expected))
+    if checks is None:
+        return True
+    if expected in ("integer", "number") and isinstance(value, bool):
+        return False
+    return isinstance(value, checks)
+
+
+def validate_input(
+    schema: Dict[str, Any], payload: Dict[str, Any]
+) -> Optional[str]:
+    """Validate *payload* against a minimal JSON-Schema object.
+
+    Returns an error message, or ``None`` when the payload is valid. This
+    intentionally supports the subset used by the skill registry
+    (``type``, ``properties``, ``required``) rather than pulling in a full
+    JSON-Schema implementation.
+    """
+    if not schema:
+        return None
+
+    expected_type = schema.get("type")
+    if expected_type and not _matches_type(payload, expected_type):
+        return f"Input must be of type {expected_type}."
+
+    required = schema.get("required", []) or []
+    for key in required:
+        if key not in payload:
+            return f"Missing required input: '{key}'."
+
+    properties = schema.get("properties", {}) or {}
+    for key, spec in properties.items():
+        if key not in payload or not isinstance(spec, dict):
+            continue
+        declared = spec.get("type")
+        if declared and not _matches_type(payload[key], declared):
+            return (
+                f"Input '{key}' must be of type {declared}, "
+                f"got {type(payload[key]).__name__}."
+            )
+        minimum = spec.get("minimum")
+        if minimum is not None and isinstance(payload[key], (int, float)):
+            if payload[key] < minimum:
+                return f"Input '{key}' must be >= {minimum}."
+        allowed = spec.get("enum")
+        if allowed and payload[key] not in allowed:
+            return f"Input '{key}' must be one of {allowed}."
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +329,12 @@ class SkillRegistry:
                 error=f"Skill '{name}' is async — use invoke_async() instead.",
             )
 
+        validation_error = validate_input(entry.schema.input_schema, kwargs)
+        if validation_error:
+            return SkillResult(
+                skill_name=name, success=False, error=validation_error
+            )
+
         try:
             data = entry.fn(**kwargs)
             return SkillResult(skill_name=name, success=True, data=data)
@@ -283,6 +357,12 @@ class SkillRegistry:
                 skill_name=name,
                 success=False,
                 error=f"Skill '{name}' not found in registry.",
+            )
+
+        validation_error = validate_input(entry.schema.input_schema, kwargs)
+        if validation_error:
+            return SkillResult(
+                skill_name=name, success=False, error=validation_error
             )
 
         try:

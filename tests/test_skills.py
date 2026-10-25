@@ -41,6 +41,36 @@ class TestSkillRegistry:
         assert result.success is False
         assert "not found" in result.error
 
+    def test_input_schema_validation(self):
+        registry = SkillRegistry()
+
+        registry.register_function(
+            name="search",
+            fn=lambda query, max_results=5: (query, max_results),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "minimum": 1},
+                },
+                "required": ["query"],
+            },
+        )
+
+        assert registry.invoke("search", query="graph").success is True
+
+        missing = registry.invoke("search")
+        assert missing.success is False
+        assert "required" in missing.error
+
+        wrong_type = registry.invoke("search", query="graph", max_results="many")
+        assert wrong_type.success is False
+        assert "max_results" in wrong_type.error
+
+        below_min = registry.invoke("search", query="graph", max_results=0)
+        assert below_min.success is False
+        assert ">= 1" in below_min.error
+
     def test_find_by_tag(self):
         registry = SkillRegistry()
 

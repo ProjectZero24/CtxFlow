@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ctxflow import CtxFlow
 from researchos.agents.base import AgentResult, BaseAgent
+from researchos.skills.paper_reader import PaperReaderSkill
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,11 @@ class ReaderAgent(BaseAgent):
         self,
         ctxflow: CtxFlow,
         llm: Optional[Callable[[str, str], str]] = None,
+        paper_reader: Optional[PaperReaderSkill] = None,
     ) -> None:
         super().__init__(name="reader", llm=llm)
         self._ctx = ctxflow
+        self._paper_reader = paper_reader or PaperReaderSkill(llm=llm)
 
     def execute(self, **kwargs: Any) -> AgentResult:
         """Read papers and ingest their claims into the knowledge graph.
@@ -117,6 +120,30 @@ class ReaderAgent(BaseAgent):
         doi = paper.get("doi", "")
         arxiv_id = paper.get("arxiv_id", "")
 
+        # Prefer the Paper Reader skill when a local PDF is available.
+        extracted_claims: List[Dict[str, Any]] = []
+        pdf_path = paper.get("pdf_path")
+        if pdf_path:
+            try:
+                info = self._paper_reader.read_pdf(str(pdf_path))
+                if not paper.get("title") and info.get("title"):
+                    title = info["title"]
+                extracted_claims = [
+                    {
+                        "type": claim.claim_type,
+                        "text": claim.text,
+                        "confidence": claim.confidence,
+                        "tags": claim.tags,
+                    }
+                    for claim in self._paper_reader.extract_claims(str(pdf_path))
+                ]
+            except Exception:
+                logger.warning(
+                    "Paper Reader failed for %s; falling back to abstract",
+                    pdf_path,
+                    exc_info=True,
+                )
+
         # 1. Create paper reference node
         paper_content = f"Paper: {title}"
         if authors:
@@ -152,27 +179,33 @@ class ReaderAgent(BaseAgent):
 
         node_ids = [paper_node_id]
 
-        # 2. If there's an abstract, create claim nodes from it
-        if abstract:
-            abstract_claims = self._extract_abstract_claims(abstract)
-            for claim in abstract_claims:
-                claim_tags = set(claim.get("tags", []))
-                claim_tags.update(paper_tags)
+        # 2. Ingest claims from the PDF, full content, or abstract.
+        if not extracted_claims:
+            source_text = paper.get("content") or abstract
+            if source_text:
+                extracted_claims = self._extract_abstract_claims(source_text)
 
-                claim_node_id = self._ctx.ingest(
-                    content=claim["text"],
-                    node_type=claim.get("type", "claim"),
-                    source_id=paper_node_id,
-                    relation_type="extracted_from",
-                    tags=claim_tags,
-                    metadata={
-                        "confidence": claim.get("confidence", 0.5),
-                        "source_paper": title,
-                        "source_doi": doi,
-                    },
-                    check_contradictions=True,
-                )
-                node_ids.append(claim_node_id)
+        for claim in extracted_claims:
+            claim_text = claim.get("text", "").strip()
+            if not claim_text:
+                continue
+            claim_tags = set(claim.get("tags", []))
+            claim_tags.update(paper_tags)
+
+            claim_node_id = self._ctx.ingest(
+                content=claim_text[:500],
+                node_type=claim.get("type", "claim"),
+                source_id=paper_node_id,
+                relation_type="extracted_from",
+                tags=claim_tags,
+                metadata={
+                    "confidence": claim.get("confidence", 0.5),
+                    "source_paper": title,
+                    "source_doi": doi,
+                },
+                check_contradictions=True,
+            )
+            node_ids.append(claim_node_id)
 
         return node_ids
 

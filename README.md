@@ -180,3 +180,68 @@ from ctxflow.memory import PostgresMemoryRuntime
 async with await PostgresMemoryRuntime.create() as runtime:
     result = await runtime.ingestor.ingest(event)
 ```
+
+---
+
+## ResearchOS — multi-agent research workspace
+
+`src/researchos/` is the application layer from the FYP proposal: four
+agents (Retriever → Reader → Synthesizer → Critic), four schema-registered
+skills, a FastAPI backend, a bundled Research Trace UI, and an evaluation
+harness with two flat-RAG baselines.
+
+### Install and run
+
+```bash
+pip install -e ".[researchos]"
+researchos-api
+# or: python -m researchos.api.main
+```
+
+Open <http://127.0.0.1:8000>. The workspace exposes:
+
+| Area | Endpoint |
+|---|---|
+| Workspace UI / Research Trace | `GET /` |
+| Health & graph stats | `GET /health` |
+| Agent chat (SSE also at `/api/stream`) | `POST /api/chat` |
+| Paper ingestion (metadata + abstract) | `POST /api/papers/ingest` |
+| PDF ingestion (Paper Reader skill) | `POST /api/papers/upload` |
+| Researcher notes | `POST/GET /api/notes` |
+| Graph data / stats | `GET /api/graph/data`, `GET /api/graph/stats` |
+| Research Trace | `POST /api/trace` |
+| Skill discovery | `GET /api/skills` |
+| OpenAPI docs | `GET /docs` |
+
+The UI is dependency-free (vanilla JS/SVG) and ships inside the wheel, so
+it needs no npm build. Clicking a citation or graph node opens the
+Research Trace panel: provenance chain, superseded claims, contradictions,
+and source papers.
+
+### Evaluation
+
+```bash
+researchos-eval
+# or: python -m researchos.eval --json --out benchmark-report.json
+```
+
+The harness compares:
+
+1. **CtxFlow graph + four agents** (`ctxflow_graph`)
+2. **Baseline A** — flat vector retrieval, single agent (`flat_rag`)
+3. **Baseline B** — flat vector retrieval, four-agent pipeline
+   (`flat_rag_multi_agent`)
+
+Metrics: answer accuracy, supersession-defence rate, provenance accuracy,
+and estimated prompt tokens per query. The flat baselines use a deterministic
+hashed bag-of-words embedder so the benchmark runs offline; swap in a real
+embedding model via `researchos.eval.baselines.HashingEmbedder`-compatible
+objects when available.
+
+### ResearchOS tests
+
+```bash
+pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
+       tests/test_workspace_api.py tests/test_eval_harness.py
+```
+

@@ -56,6 +56,7 @@ class ChatResponse(BaseModel):
 class PaperIngestRequest(BaseModel):
     """Request to ingest a paper."""
 
+    project_id: str = Field("default", description="Project workspace ID.")
     title: str = Field("", description="Paper title.")
     abstract: str = Field("", description="Paper abstract.")
     authors: List[str] = Field(
@@ -81,6 +82,7 @@ class PaperIngestResponse(BaseModel):
     contradictions_found: int = Field(
         0, description="Number of contradictions detected."
     )
+    project_id: str = Field("default", description="Project workspace ID.")
     message: str = ""
 
 
@@ -224,6 +226,37 @@ class SearchResponse(BaseModel):
     """Literature search response."""
 
     results: List[SearchResultResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Notes
+# ---------------------------------------------------------------------------
+
+class NoteCreateRequest(BaseModel):
+    """Request to create a researcher note in a project."""
+
+    content: str = Field(..., min_length=1, description="Note text.")
+    project_id: str = Field("default", description="Project workspace ID.")
+    title: str = Field("", description="Optional note title.")
+    tags: List[str] = Field(default_factory=list, description="Extra tags.")
+
+
+class NoteResponse(BaseModel):
+    """A stored researcher note."""
+
+    node_id: str
+    content: str
+    title: str = ""
+    project_id: str = "default"
+    tags: List[str] = Field(default_factory=list)
+    timestamp: float = 0.0
+
+
+class NoteListResponse(BaseModel):
+    """List of notes in a project."""
+
+    notes: List[NoteResponse] = Field(default_factory=list)
     total: int = 0
 
 
