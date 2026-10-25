@@ -148,7 +148,7 @@ class CtxFlowConfig:
     embedding_enabled: bool = False
     """When True, use embedding cosine similarity as a scoring signal."""
 
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
     """Identifier of the embedding model (informational, not used directly)."""
 
     # -- Contradiction detection --

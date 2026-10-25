@@ -3,6 +3,7 @@ asyncpg>=0.29.0
 python-dotenv>=1.0
 pydantic>=2.0
 
+
 [all]
 spacy>=3.0
 msgpack>=1.0

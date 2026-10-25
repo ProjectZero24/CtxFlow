@@ -146,7 +146,7 @@ class InMemoryMemoryStore:
                 continue
             keyword_score = self._keyword_score(query_terms, snapshot.text)
             dense_score = self._cosine(query_emb, snapshot.embedding)
-            if keyword_score or dense_score or not query_terms and query_emb is None:
+            if keyword_score or dense_score or query_emb is not None or not query_terms:
                 candidates.append((memory.id, keyword_score, dense_score))
 
         keyword_rank = self._rank({item[0]: item[1] for item in candidates})
@@ -208,6 +208,15 @@ class InMemoryMemoryStore:
         """Return all immutable versions in ascending version order."""
 
         return list(self.versions.get(memory_id, []))
+
+    async def record_access(self, memory_id: str) -> None:
+        """Record a deduplication hit on the canonical memory."""
+
+        memory = self.memories.get(memory_id)
+        if memory is None:
+            raise KeyError(f"Unknown memory: {memory_id}")
+        memory.access_count += 1
+        memory.importance = min(1.0, memory.importance + 0.05)
 
     async def add_edge(self, edge: Edge) -> None:
         """Add or replace one typed edge after validating both endpoints."""

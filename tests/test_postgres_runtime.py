@@ -97,3 +97,27 @@ def test_runtime_closes_pool_and_builds_postgres_ingestor(monkeypatch):
         assert pool.closed
 
     asyncio.run(run())
+
+
+def test_runtime_falls_back_to_hash_embedder_when_bge_is_unavailable(monkeypatch):
+    class FakePool:
+        async def close(self):
+            pass
+
+    async def fake_create_pool(**_kwargs):
+        return FakePool()
+
+    def unavailable_bge():
+        raise RuntimeError("sentence-transformers unavailable")
+
+    monkeypatch.setattr("ctxflow.memory.runtime.create_pool", fake_create_pool)
+    monkeypatch.setattr("ctxflow.memory.runtime.LocalBGEEmbedder", unavailable_bge)
+
+    async def run():
+        runtime = await PostgresMemoryRuntime.create()
+        assert isinstance(runtime.ingestor.embedder, HashEmbedder)
+        assert runtime.ingestor.embedder.dimension == 384
+        assert runtime.store.embedding_dimension == 384
+        await runtime.close()
+
+    asyncio.run(run())

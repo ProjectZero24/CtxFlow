@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Protocol, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Set
 
 from ctxflow.extractors import Extractor
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from ctxflow.extraction_cache import ExtractionCache, event_extraction_key, extraction_key
 
 if TYPE_CHECKING:
     from ctxflow.models import Node
@@ -70,6 +73,27 @@ _CLAIM_SYSTEM = (
     'quality.", "confidence": 0.9, "tags": ["attention", "translation"]}]'
 )
 
+_ATOMIC_SYSTEM = (
+    "You are a memory extraction assistant. Split the message into atomic "
+    "memories. Respond with ONLY a JSON array of objects, with exactly these "
+    "fields: text (string), type (string), entities (array of strings), "
+    "claims (array of strings), refs (array of strings). Keep each memory "
+    "self-contained and do not invent facts. Return [] only for an empty "
+    "message."
+)
+
+
+class AtomicMemory(BaseModel):
+    """One validated, independently retrievable memory extracted from an event."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    entities: list[str] = Field(default_factory=list)
+    claims: list[str] = Field(default_factory=list)
+    refs: list[str] = Field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # LLMExtractor
@@ -97,18 +121,36 @@ class LLMExtractor(Extractor):
         llm: LLMCallable,
         max_tags: int = 20,
         fallback: Optional[Extractor] = None,
+        cache: Optional[ExtractionCache] = None,
+        extraction_retries: int = 2,
+        model_version: str = "default",
+        prompt_version: str = "v1",
     ) -> None:
         self._llm = llm
         self.max_tags = max_tags
         self._fallback = fallback
+        self._cache = cache
+        if extraction_retries < 0:
+            raise ValueError("extraction_retries must be >= 0")
+        self.extraction_retries = extraction_retries
+        self.model_version = model_version
+        self.prompt_version = prompt_version
 
     # -- Extractor interface ------------------------------------------------
 
     def extract_tags(self, text: str) -> Set[str]:
         """Extract semantic tags using the LLM."""
         try:
-            raw = self._llm(text, system=_TAG_SYSTEM)
-            tags = self._parse_tag_response(raw)
+            key = extraction_key(
+                "tags", text, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
+            cached = self._cache.get(key) if self._cache is not None else None
+            tags = cached if cached is not None else self._parse_tag_response(
+                self._llm(text, system=_TAG_SYSTEM)
+            )
+            if self._cache is not None and cached is None:
+                self._cache.set(key, tags)
             return set(tags[: self.max_tags])
         except Exception:
             logger.warning("LLM tag extraction failed, using fallback", exc_info=True)
@@ -121,7 +163,15 @@ class LLMExtractor(Extractor):
     def summarize(self, text: str) -> str:
         """Produce an abstractive summary using the LLM."""
         try:
-            summary = self._llm(text, system=_SUMMARY_SYSTEM)
+            key = extraction_key(
+                "summary", text, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
+            summary = self._cache.get(key) if self._cache is not None else None
+            if summary is None:
+                summary = self._llm(text, system=_SUMMARY_SYSTEM)
+                if self._cache is not None:
+                    self._cache.set(key, summary.strip())
             return summary.strip()
         except Exception:
             logger.warning("LLM summarization failed, using fallback", exc_info=True)
@@ -143,7 +193,15 @@ class LLMExtractor(Extractor):
         combined = "\n\n".join(parts)
 
         try:
-            summary = self._llm(combined, system=_MULTI_SUMMARY_SYSTEM)
+            key = extraction_key(
+                "multi_summary", combined, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
+            summary = self._cache.get(key) if self._cache is not None else None
+            if summary is None:
+                summary = self._llm(combined, system=_MULTI_SUMMARY_SYSTEM)
+                if self._cache is not None:
+                    self._cache.set(key, summary.strip())
             return summary.strip()
         except Exception:
             logger.warning("LLM multi-node summary failed, using fallback", exc_info=True)
@@ -154,6 +212,70 @@ class LLMExtractor(Extractor):
             )
 
     # -- Extended methods (not part of base Extractor) ----------------------
+
+    def extract_atomic_memories(
+        self,
+        text: str,
+        *,
+        event_hash: str | None = None,
+    ) -> List[AtomicMemory]:
+        """Extract Pydantic-validated atomic memories with retry and fallback.
+
+        ``event_hash`` is used as the cache identity when supplied, ensuring
+        retries and repeated ingestion of the same event reuse one response.
+        Invalid LLM output falls back to one raw-message memory.
+        """
+
+        cache_key = (
+            event_extraction_key(
+                event_hash, model_version=self.model_version,
+                prompt_version=self.prompt_version,
+            )
+            if event_hash else None
+        )
+        if self._cache is not None and cache_key is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return [self._atomic_from_value(item) for item in cached]
+
+        for attempt in range(self.extraction_retries + 1):
+            try:
+                raw = self._llm(text, system=_ATOMIC_SYSTEM)
+                extracted = self._parse_atomic_response(raw)
+                if self._cache is not None and cache_key is not None:
+                    self._cache.set(cache_key, [item.model_dump() for item in extracted])
+                return extracted
+            except Exception:
+                if attempt < self.extraction_retries:
+                    logger.warning(
+                        "Atomic memory extraction attempt %d failed; retrying",
+                        attempt + 1,
+                    )
+                else:
+                    logger.warning(
+                        "Atomic memory extraction failed; using raw message",
+                        exc_info=True,
+                    )
+        fallback = [AtomicMemory(text=text, type="conversation")]
+        if self._cache is not None and cache_key is not None:
+            self._cache.set(cache_key, [item.model_dump() for item in fallback])
+        return fallback
+
+    @staticmethod
+    def _atomic_from_value(value: Any) -> AtomicMemory:
+        return AtomicMemory.model_validate(value)
+
+    @classmethod
+    def _parse_atomic_response(cls, raw: str) -> List[AtomicMemory]:
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(line for line in lines if not line.strip().startswith("```"))
+        payload = json.loads(text)
+        if not isinstance(payload, list):
+            raise ValueError("Expected atomic memories JSON array")
+        return [cls._atomic_from_value(item) for item in payload]
+
 
     def extract_claims(self, text: str) -> List[Dict[str, Any]]:
         """Extract structured claims, methods, and results from academic text.
@@ -173,8 +295,12 @@ class LLMExtractor(Extractor):
             Each dict has keys ``type``, ``text``, ``confidence``, ``tags``.
         """
         try:
-            raw = self._llm(text, system=_CLAIM_SYSTEM)
-            claims = self._parse_claims_response(raw)
+            key = extraction_key("claims", text)
+            claims = self._cache.get(key) if self._cache is not None else None
+            if claims is None:
+                claims = self._parse_claims_response(self._llm(text, system=_CLAIM_SYSTEM))
+                if self._cache is not None:
+                    self._cache.set(key, claims)
             return claims
         except Exception:
             logger.warning("LLM claim extraction failed", exc_info=True)

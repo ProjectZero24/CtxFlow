@@ -15,12 +15,6 @@ Provides-Extra: binary
 Requires-Dist: msgpack>=1.0; extra == "binary"
 Provides-Extra: llm
 Requires-Dist: openai>=1.0; extra == "llm"
-Provides-Extra: researchos
-Requires-Dist: fastapi>=0.110; extra == "researchos"
-Requires-Dist: uvicorn[standard]>=0.29; extra == "researchos"
-Requires-Dist: httpx>=0.27; extra == "researchos"
-Requires-Dist: pymupdf>=1.24; extra == "researchos"
-Requires-Dist: sse-starlette>=2.0; extra == "researchos"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0; extra == "dev"
@@ -127,7 +121,7 @@ Run the full test suite with `pytest`:
 pytest tests
 ```
 
-## Memory vertical slice (Christo, weeks 3–6)
+## Memory vertical slice
 
 The `ctxflow.memory` package includes the production memory path while
 retaining the deterministic in-memory implementation for local tests:

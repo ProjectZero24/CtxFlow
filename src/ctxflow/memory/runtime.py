@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 from dotenv import dotenv_values
 
-from ctxflow.memory.embeddings import Embedder, HashEmbedder
+from ctxflow.memory.embeddings import Embedder, HashEmbedder, LocalBGEEmbedder
+from ctxflow.memory.edge_proposer import LLMEdgeProposer
 from ctxflow.memory.ingestion import EventIngestor
 from ctxflow.memory.postgres_store import PostgresMemoryStore
 
 _REQUIRED_DATABASE_VARIABLES = (
     "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -85,13 +89,55 @@ class PostgresMemoryRuntime:
         cls,
         *,
         embedder: Embedder | None = None,
+        extractor: Any | None = None,
+        edge_proposer: LLMEdgeProposer | None = None,
         dotenv_path: str | Path | None = None,
+        llm_timeout: float = 30.0,
+        extraction_retries: int = 2,
+        provider_timeout: float = 30.0,
+        provider_retries: int = 2,
         **pool_options: Any,
     ) -> "PostgresMemoryRuntime":
+        if embedder is not None:
+            active_embedder = embedder
+        else:
+            try:
+                active_embedder = LocalBGEEmbedder()
+            except RuntimeError as error:
+                _LOGGER.warning(
+                    "Local BGE embedder unavailable; using the deterministic "
+                    "384-dimensional HashEmbedder fallback: %s",
+                    error,
+                )
+                active_embedder = HashEmbedder(dimension=384)
         pool = await create_pool(dotenv_path=dotenv_path, **pool_options)
-        active_embedder = embedder or HashEmbedder(dimension=128)
-        store = PostgresMemoryStore(pool, embedding_dimension=128)
-        return cls(pool, store, EventIngestor(store, active_embedder))
+        groq_key = _groq_api_key(dotenv_path)
+        active_extractor = extractor
+        active_edge_proposer = edge_proposer
+        if groq_key and (active_extractor is None or active_edge_proposer is None):
+            from ctxflow.llm_extractor import LLMExtractor
+            from ctxflow.providers.groq import GroqLLM
+
+            llm = GroqLLM(api_key=groq_key, timeout=llm_timeout)
+            if active_extractor is None:
+                active_extractor = LLMExtractor(
+                    llm, extraction_retries=extraction_retries
+                )
+            if active_edge_proposer is None:
+                active_edge_proposer = LLMEdgeProposer(llm)
+        store = PostgresMemoryStore(pool, embedding_dimension=active_embedder.dimension)
+        return cls(
+            pool,
+            store,
+            EventIngestor(
+                store,
+                active_embedder,
+                active_extractor,
+                edge_proposer=active_edge_proposer,
+                provider_timeout=provider_timeout,
+                provider_retries=provider_retries,
+            ),
+        )
 
     async def close(self) -> None:
         await self.pool.close()
@@ -101,3 +147,8 @@ class PostgresMemoryRuntime:
 
     async def __aexit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         await self.close()
+
+
+def _groq_api_key(dotenv_path: str | Path | None) -> str | None:
+    value = dotenv_values(dotenv_path).get("GROQ_API_KEY")
+    return os.getenv("GROQ_API_KEY") or (str(value) if value else None)

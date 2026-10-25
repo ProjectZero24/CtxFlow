@@ -80,10 +80,10 @@ def test_real_postgres_memory_and_ingestion_path():
                       AND a.attname='embedding' AND NOT a.attisdropped""",
                     ["memories", "memory_versions"],
                 )
-                assert {row["type"] for row in vector_types} == {"vector(128)"}
+                assert {row["type"] for row in vector_types} == {"vector(384)"}
 
             store = runtime.store
-            vector = [0.0] * 127 + [1.0]
+            vector = [0.0] * 383 + [1.0]
             memory = Memory(
                 id=memory_id,
                 text="real PostgreSQL memory",
@@ -104,7 +104,7 @@ def test_real_postgres_memory_and_ingestion_path():
             assert len(history) == 1
             assert history[0].version == 1
 
-            new_vector = [1.0] + [0.0] * 127
+            new_vector = [1.0] + [0.0] * 383
             assert await store.create_version(
                 memory_id,
                 "updated PostgreSQL memory",
@@ -128,7 +128,7 @@ def test_real_postgres_memory_and_ingestion_path():
                 id=neighbor_id,
                 text="neighbor memory",
                 session_id=prefix,
-                embedding=[0.0] * 128,
+                embedding=[0.0] * 384,
             )
             null_memory = Memory(
                 id=null_embedding_id,
