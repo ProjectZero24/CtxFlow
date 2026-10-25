@@ -201,14 +201,13 @@ class CtxFlow:
         # 3. Explicit link (if source_id provided).
         edge_relation = relation_type or "follows"
         if source_id and self._graph.has_node(source_id):
-            if self._governance.can_add_edge(self._graph, source_id):
-                edge = Edge(
-                    source_id=source_id,
-                    target_id=node.id,
-                    relation_type=edge_relation,
-                    weight=1.0,
-                )
-                self._graph.add_edge(edge)
+            edge = Edge(
+                source_id=source_id,
+                target_id=node.id,
+                relation_type=edge_relation,
+                weight=1.0,
+            )
+            self._governance.add_edge(self._graph, edge)
 
         # 4. Implicit links (top-k tag-similar nodes).
         if self._config.max_link_k > 0:
@@ -220,14 +219,13 @@ class CtxFlow:
             )
             for similar_node, sim_score in similar:
                 # Check degree cap before linking.
-                if self._governance.can_add_edge(self._graph, node.id):
-                    edge = Edge(
-                        source_id=node.id,
-                        target_id=similar_node.id,
-                        relation_type="related_to",
-                        weight=sim_score,
-                    )
-                    self._graph.add_edge(edge)
+                edge = Edge(
+                    source_id=node.id,
+                    target_id=similar_node.id,
+                    relation_type="related_to",
+                    weight=sim_score,
+                )
+                self._governance.add_edge(self._graph, edge)
 
         # 5. Contradiction detection (if enabled).
         should_check = check_contradictions if check_contradictions is not None \

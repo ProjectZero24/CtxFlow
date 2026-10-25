@@ -39,6 +39,7 @@ from researchos.skills.literature_search import LiteratureSearchSkill
 from researchos.skills.paper_reader import PaperReaderSkill
 from researchos.skills.registry import SkillRegistry
 from researchos.skills.review_writer import ReviewWriterSkill
+from researchos.memory.context import create_context_provider
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def create_app(
     ctxflow: Optional[CtxFlow] = None,
     skill_registry: Optional[SkillRegistry] = None,
     router_agent: Optional[SkillRouter] = None,
+    memory_store: Any | None = None,
     enable_cors: bool = True,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
@@ -76,6 +78,11 @@ def create_app(
         if ctxflow is None:
             ctxflow = CtxFlow()
         state["ctxflow"] = ctxflow
+        if memory_store is not None:
+            provider = create_context_provider(memory_store)
+            if provider is not None:
+                state["context_provider"] = provider
+                app.state.context_provider = provider
 
         # 2. Initialize Skills
         lit_search = LiteratureSearchSkill()
@@ -210,6 +217,7 @@ def create_app(
         version="0.2.0",
         lifespan=lifespan,
     )
+    app.state.context_provider = None
 
     if enable_cors:
         app.add_middleware(
