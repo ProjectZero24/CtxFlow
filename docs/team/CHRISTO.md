@@ -8,7 +8,7 @@
 | **Primary skill** | [`researchos_team_skills/researchos-ctxflow-memory/SKILL.md`](../../researchos_team_skills/researchos-ctxflow-memory/SKILL.md) |
 | **Secondary skill** | None. Read `researchos-orchestration/SKILL.md` only for the run-state contract; do not follow its edit instructions. |
 | **Working branch** | `feat/christo-memory` (never commit directly to `Adi/feat/v1`) |
-| **Baseline** | `Adi/feat/v1` @ `810dd54`; `120 passed, 1 skipped` (verified 25 Oct 2026) |
+| **Baseline** | `Adi/feat/v1` @ `e1f43c6` (PR #3 merged); `144 passed, 6 skipped` (verified 25 Oct 2026) |
 | **Contract freeze** | Fri 30 Oct 2026, 18:00 |
 | **Code freeze** | Fri 11 Dec 2026 |
 
@@ -30,13 +30,15 @@
 CtxFlow is a graph-native memory engine for LLM agents. ResearchOS is the application on top of it.
 
 - `CtxFlow` (`src/ctxflow/__init__.py`) is a **synchronous, in-memory** facade over `ContextGraph`, a NetworkX `DiGraph` with an inverted tag index, Jaccard auto-linking, degree governance, drop/summarize pruning, supersession edges, and JSON/MessagePack export.
-- `ctxflow.memory` (`src/ctxflow/memory/`) is a **separate async subsystem**: `MemoryStore` protocol, `InMemoryMemoryStore`, `PostgresMemoryStore` (asyncpg + pgvector), `EventIngestor`, `HashEmbedder`, `SimpleTokenizer`, and `migrations/001_memory_schema.sql`.
+- `ctxflow.memory` (`src/ctxflow/memory/`) is a **separate async subsystem**: `MemoryStore` protocol, `InMemoryMemoryStore`, `PostgresMemoryStore` (asyncpg + pgvector), `EventIngestor`, `HashEmbedder` / `LocalBGEEmbedder`, `SimpleTokenizer`, plus PR #3 additions `classification.py`, `deduplication.py`, `edge_proposer.py`, `importance.py`, and `ctxflow/extraction_cache.py`.
+- `ctxflow/providers/groq.py` is a synchronous `GroqLLM` adapter used for structured extraction and edge proposals. It reads `GROQ_API_KEY` from env/dotenv and is not wired into ResearchOS.
+- Migrations: `001_memory_schema.sql` was modified by PR #3; `004_bge_small_384_dimension.sql` moves embeddings to 384-dim BGE and requires `scripts/reembed_bge.py` afterwards.
 - Those two memory systems **do not talk to each other**. Nothing in ResearchOS reads or writes `ctxflow.memory`. The API graph is lost on restart.
 - ResearchOS today reads and writes only the in-memory `CtxFlow` graph. `project_id` is stored in paper/note metadata, but `CtxFlow.query()` does **not** filter by it; only `GET /api/notes` filters.
 
 Your job is to close exactly that gap: make memory durable, project-isolated, auditable, and resumable, without replacing the working graph engine.
 
-### What already exists (verified at `34cf19f` / `810dd54`)
+### What already exists (verified at `34cf19f`, re-audited at `e1f43c6` after PR #3)
 
 | Component | State |
 |---|---|
@@ -45,7 +47,10 @@ Your job is to close exactly that gap: make memory durable, project-isolated, au
 | `ContextGraph`: tag index, BFS, `trace_provenance`, degree helpers | Real |
 | Governance and pruning | Real; degree cap is uneven across edge-write paths |
 | JSON / MessagePack serialization | Real; schema `version: 1` |
-| `ctxflow.memory` stores, ingestion, embeddings, tokens, runtime | Real but **unwired** |
+| `ctxflow.memory` stores, ingestion, embeddings, tokens, runtime | Real but **unwired**; PR #3 added classification, dedupe, edge proposals, importance, and an extraction cache |
+| `record_access` on the `MemoryStore` protocol | **Required** as of PR #3; implemented by both built-in stores, breaks third-party stores |
+| Local BGE embeddings (`LocalBGEEmbedder`, 384-dim) + `scripts/reembed_bge.py` | Real; `HashEmbedder(384)` fallback when `sentence-transformers` is absent |
+| Groq adapter (`ctxflow/providers/groq.py`) | Real, synchronous; no ResearchOS wiring |
 | `project_id` on memory records | **Absent** |
 | PostgreSQL persistence for ResearchOS | **Absent** |
 | Run/checkpoint/event tables | **Absent** |
@@ -138,7 +143,7 @@ Each item is done only when its acceptance test exists and passes.
 |---|---|---|
 | 1 | Add `project_id` to memory records and the schema; every retrieval path filters by it | Cross-project leakage test fails closed; `project_id` required at the API boundary |
 | 2 | Wire an optional `ContextProvider` adapter over `MemoryStore` | ResearchOS runs with memory disabled; no import errors; flag controls enablement |
-| 3 | Capability detection instead of required methods: optional `record_access`, `add_edge`, `add_provenance`, `claim_event`, `persist_ingestion` | Existing in-memory and Postgres stores both pass the same contract tests |
+| 3 | Demote `record_access` (made required by PR #3) to an optional capability, alongside `add_edge`, `add_provenance`, `claim_event`, `persist_ingestion`; call it via `getattr` | Both built-in stores pass the same contract tests; a third-party store without `record_access` still works |
 | 4 | Atomic supersession write: edge insert + `status` + `superseded_by` in one transaction | Fault-injection test leaves **no** half-applied state |
 | 5 | Enforce degree caps on **every** edge-write path, not just the new node's outgoing side | Property test: 1 000 random inserts, max outgoing degree respected |
 | 6 | Compaction is a maintenance job, never inline with a user query | Demo query latency unaffected by pruning; CLI documented |
@@ -166,14 +171,15 @@ Each item is done only when its acceptance test exists and passes.
    - Option B: add `project_id` to `Memory` + `memories` table + `search()` + `EventIngestor`. Correct model, needs `migrations/002_memory_scope.sql`. **Recommended.**
    - Never fetch everything and filter in Python. That is not isolation and will not scale.
 3. **Write the failing tests first**: isolation, parity, token budget, atomic supersession, idempotent migration.
-4. **Add the migration** as a new file. `001_*.sql` is frozen; `004` belongs to PR #3; use `002`/`003` if free, otherwise `005+`.
-5. **Implement store support** and the adapter. Keep `ContextProvider` optional.
-6. **Map artifacts to memory types**: paper → `DOCUMENT`/`DOCUMENT`; claim/evidence → `FACT`/`OBSERVATION` with `DERIVED_FROM`; note → `OBSERVATION`/`USER_MESSAGE`; decision → `DECISION`.
-7. **Rank and pack**: relevance + explainable signals (validity, source type, confidence); deterministic order; stop at budget; record exclusions.
-8. **Handle supersession** through `ValidityState` + `Relation.SUPERSEDES` + `create_version()`. Preserve history.
-9. **Wire behind a flag** in `create_app()` only after Harikesh/Abinav agree.
-10. **Add run-state persistence** (see §7).
-11. **Benchmark and document**: graph stats, memory footprint, migration steps, limitations.
+4. **Add the migration** as a new file. `001_*.sql` was modified by PR #3 and must not be edited again; `004` is taken. Use `005+`.
+5. **If you touch embeddings**, read `migrations/004_bge_small_384_dimension.sql` and `scripts/reembed_bge.py` first. Migration 004 clears vectors before re-embedding; back up and rehearse it, never run it casually.
+6. **Implement store support** and the adapter. Keep `ContextProvider` optional.
+7. **Map artifacts to memory types**: paper → `DOCUMENT`/`DOCUMENT`; claim/evidence → `FACT`/`OBSERVATION` with `DERIVED_FROM`; note → `OBSERVATION`/`USER_MESSAGE`; decision → `DECISION`.
+8. **Rank and pack**: relevance + explainable signals (validity, source type, confidence); deterministic order; stop at budget; record exclusions.
+9. **Handle supersession** through `ValidityState` + `Relation.SUPERSEDES` + `create_version()`. Preserve history.
+10. **Wire behind a flag** in `create_app()` only after Harikesh/Abinav agree.
+11. **Add run-state persistence** (see §7).
+12. **Benchmark and document**: graph stats, memory footprint, migration steps, limitations.
 
 ---
 
@@ -310,10 +316,12 @@ python -m researchos.eval                                            # must stil
 | `prune("summarize")` returns only removed IDs | Callers cannot find summary nodes | Return both, or add a separate result type |
 | `bfs_distances` is undirected | Proximity ignores edge direction | Keep, but state it in the contract |
 | `recency = 1/(1+age_seconds)` | Almost every node scores ~0 | Do not "fix" silently; coordinate with context owner |
-| `embedding_enabled` / `embedding_model` / `prune_min_access` are dead config | False expectations | Remove or wire; do not document them as features |
+| `embedding_enabled` / `embedding_model` / `prune_min_access` are dead config | False expectations; the model default is now BGE but the facade still never reads it | Remove or wire; do not document them as features |
+| `record_access` is a **required** protocol method after PR #3 | Any third-party `MemoryStore` without it breaks | Demote to optional capability and call via `getattr` |
 | `InMemoryMemoryStore.search()` ignores history and supersession | Divergence from Postgres | Fix now; add parity test |
+| Migration `004` nulls vectors before re-embedding | Running it without a backup/re-embed loses retrieval quality | Back up, run `scripts/reembed_bge.py`, verify counts |
 | Route modules hold module-level `_app_state` | Two apps collide; not task-safe | Do not build run state on it |
-| `migrations/001` is not auto-run | Fresh clone has no tables | Document setup; add a check at startup or a script |
+| `migrations/001` is not auto-run and was modified by PR #3 | Fresh clone has no tables; old copies diverge | Document setup; add a check at startup or a script; never edit `001` again |
 
 ---
 

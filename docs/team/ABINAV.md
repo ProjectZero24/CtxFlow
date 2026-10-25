@@ -8,7 +8,7 @@
 | **Primary skill** | [`researchos_team_skills/researchos-frontend-integration-evaluation/SKILL.md`](../../researchos_team_skills/researchos-frontend-integration-evaluation/SKILL.md) |
 | **Secondary reading** | `researchos-orchestration/SKILL.md` (SSE/run contract) and `researchos-evidence-retrieval/SKILL.md` (source/access fields). Read only; do not edit their areas. |
 | **Working branch** | `feat/abinav-ui-eval` |
-| **Baseline** | `Adi/feat/v1` @ `810dd54`; `120 passed, 1 skipped` (verified 25 Oct 2026) |
+| **Baseline** | `Adi/feat/v1` @ `e1f43c6` (PR #3 merged); `144 passed, 6 skipped` (verified 25 Oct 2026) |
 | **Contract freeze** | Fri 30 Oct 2026, 18:00 |
 
 ---

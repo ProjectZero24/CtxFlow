@@ -8,7 +8,7 @@
 | **Primary skill** | [`researchos_team_skills/researchos-orchestration/SKILL.md`](../../researchos_team_skills/researchos-orchestration/SKILL.md) |
 | **Secondary skill** | None as an edit mandate. Read `researchos-frontend-integration-evaluation` for the SSE/UI contract and `researchos-ctxflow-memory` for run-state persistence constraints. |
 | **Working branch** | `feat/harikesh-orchestration` |
-| **Baseline** | `Adi/feat/v1` @ `810dd54`; `120 passed, 1 skipped` (verified 25 Oct 2026) |
+| **Baseline** | `Adi/feat/v1` @ `e1f43c6` (PR #3 merged); `144 passed, 6 skipped` (verified 25 Oct 2026) |
 | **Contract freeze** | Fri 30 Oct 2026, 18:00 |
 
 ---
@@ -364,7 +364,7 @@ python -m researchos.eval
 | Landmine | Consequence | Action |
 |---|---|---|
 | Router is regex-only and returns `UNKNOWN` easily | Silent fallback to the wrong pipeline | Measure misclassification on a fixture; only then add bounded LLM fallback |
-| PR #3 classifier is 59 % accurate with a dead class | Auto-routing/ingestion would be unreliable | Do not use `classify_memory` as a gate |
+| PR #3 classifier is 59 % accurate with a dead class; it is now **merged** | Auto-routing/ingestion would be unreliable | Do not use `classify_memory` as a gate; measure before routing |
 | `SkillRouter` skips failed agents | Partial answer looks complete | Surface `success=False` and label partial results |
 | `/api/chat` calls sync `run()` in `async def` | Blocks every request | Fix consistently, add regression test |
 | `previous_results` and `context["previous_output"]` carry different shapes | Agents disagree about input | Document one precedence rule; test it |

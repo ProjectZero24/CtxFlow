@@ -8,7 +8,7 @@
 | **Primary skill** | [`researchos_team_skills/researchos-evidence-retrieval/SKILL.md`](../../researchos_team_skills/researchos-evidence-retrieval/SKILL.md) |
 | **Secondary reading** | `researchos-orchestration/SKILL.md` (how your skills are invoked) and `researchos-ctxflow-memory/SKILL.md` (token/provenance conventions). Read only; do not follow their edit scopes. |
 | **Working branch** | `feat/adithyan-evidence` |
-| **Baseline** | `Adi/feat/v1` @ `810dd54`; `120 passed, 1 skipped` (verified 25 Oct 2026) |
+| **Baseline** | `Adi/feat/v1` @ `e1f43c6` (PR #3 merged); `144 passed, 6 skipped` (verified 25 Oct 2026) |
 | **Contract freeze** | Fri 30 Oct 2026, 18:00 |
 
 ---
@@ -302,7 +302,7 @@ researchos-api
 | Temp PDFs on upload | Leak if an exception path misses cleanup | `try/finally`; test it |
 | `CriticAgent` only parses node status | Citations can be dead | Provide resolver; Harikesh owns verdict |
 | `ReviewWriterSkill` emits `[Node:ID]` | Not DOI citations | Do not overclaim; validate IDs |
-| `tests/llm.py` executes network at import | Breaks collection if picked up | Never add it to pytest paths |
+| `tests/llm.py` executed network code at import | Removed in PR #3 | Do not reintroduce network code at import time |
 
 ---
 
