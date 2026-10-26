@@ -47,6 +47,14 @@ class ChatResponse(BaseModel):
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Execution metadata."
     )
+    external_search: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Outcome of the external literature search, when the pipeline "
+            "performed one: status ok|empty|partial|error|skipped|unknown, "
+            "per-provider detail, and error messages."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +230,33 @@ class SearchResultResponse(BaseModel):
     source: str = ""
 
 
+class ProviderOutcomeResponse(BaseModel):
+    """Outcome of a single literature search provider."""
+
+    provider: str
+    status: str = "unknown"
+    result_count: int = 0
+    error: str = ""
+    error_type: str = ""
+    status_code: Optional[int] = None
+    from_cache: bool = False
+    elapsed_ms: float = 0.0
+
+
 class SearchResponse(BaseModel):
-    """Literature search response."""
+    """Literature search response.
+
+    ``results`` stays the primary payload; ``status`` and ``errors`` make a
+    provider outage distinguishable from "no papers found".
+    """
 
     results: List[SearchResultResponse] = Field(default_factory=list)
     total: int = 0
+    status: str = "unknown"
+    provider: str = ""
+    providers: Dict[str, ProviderOutcomeResponse] = Field(default_factory=dict)
+    errors: Dict[str, str] = Field(default_factory=dict)
+    elapsed_ms: float = 0.0
 
 
 # ---------------------------------------------------------------------------
