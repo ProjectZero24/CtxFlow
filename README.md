@@ -218,6 +218,31 @@ it needs no npm build. Clicking a citation or graph node opens the
 Research Trace panel: provenance chain, superseded claims, contradictions,
 and source papers.
 
+### Literature search outcomes
+
+Provider failures are no longer flattened into an empty result list. The
+list-returning functions remain for compatibility, and the outcome-aware API
+reports what actually happened:
+
+```python
+from researchos.skills.literature_search import LiteratureSearchSkill
+
+skill = LiteratureSearchSkill()
+outcome = skill.search_with_outcome("graph neural networks", provider="both")
+
+outcome.status          # ok | empty | partial | error
+outcome.results         # deduplicated list[PaperResult]
+outcome.errors          # {"semantic_scholar": "HTTPError: 429 ..."}
+outcome.to_dict()       # per-provider status, error type, cache/latency info
+```
+
+`RetrieverAgent` exposes the same payload as
+`data["external_search"]` and mirrors the status in its metadata, so an
+outage is visible in the API/SSE stream instead of looking like "no papers
+found". It reports `skipped` when the graph already has enough context, and
+`unknown` for injected custom skills that only implement `search()`. Provider
+errors are never cached; successful and genuinely empty responses are.
+
 ### Evaluation
 
 ```bash
@@ -242,6 +267,7 @@ objects when available.
 
 ```bash
 pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
-       tests/test_workspace_api.py tests/test_eval_harness.py
+       tests/test_workspace_api.py tests/test_eval_harness.py \
+       tests/test_literature_search_outcomes.py
 ```
 

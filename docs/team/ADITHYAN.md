@@ -41,7 +41,7 @@ query
 
 What is broken or missing:
 
-- `search_arxiv` / `search_semantic_scholar` use blocking `urllib` (30 s timeout) and **return `[]` on any error**. A provider outage is indistinguishable from "no papers found".
+- `search_arxiv` / `search_semantic_scholar` use blocking `urllib` (30 s timeout) and **return `[]` on any error**. A provider outage is indistinguishable from "no papers found". *(Fixed 26 Oct 2026: outcome-aware variants now report `ok` / `empty` / `error`; see §5.)*
 - Deduplication uses **lowercased title only**. DOI and arXiv ID are captured but unused; `_parse_arxiv_xml` never sets DOI; Semantic Scholar may return an empty URL.
 - **No PDF downloader exists.** `ReaderAgent` only parses a PDF when `paper["pdf_path"]` is already present; otherwise it derives "evidence" from the abstract.
 - `ReaderAgent` stores `source_paper` as the paper **title** and drops `section` / `page`; only `/api/papers/upload` preserves page metadata.
@@ -143,6 +143,23 @@ The skills split (commit `6ae8b0f`) assigns you evidence/retrieval. The older la
 - `source_paper` (a title) is **not** sufficient provenance. Add the paper node ID.
 - Respect robots/terms/access controls. Do not bypass paywalls.
 - Every external call has a timeout, a bounded retry, and a fallback.
+
+### Implementation status
+
+| Gap | Status |
+|---|---|
+| Explicit provider outcomes (`ok` / `empty` / `partial` / `error`), failure metadata, and failure-aware cache | **Implemented** 26 Oct 2026 on `feat/adithyan-evidence`; `tests/test_literature_search_outcomes.py` |
+| Metadata normalization + dedupe by DOI → arXiv ID → cautious title | Next |
+| PDF downloader with allowlist, size/time caps, `access_status` | Not started |
+| Page/section provenance through extraction and persistence | Not started |
+| Citation validator for `[Node:ID]` and quoted excerpts | Not started |
+| Politeness: rate limiting, backoff, `both` result cap | Not started |
+
+The list-returning `search_arxiv`, `search_semantic_scholar`, and
+`LiteratureSearchSkill.search` remain for existing callers. New callers should
+use `search_arxiv_outcome`, `search_semantic_scholar_outcome`, or
+`LiteratureSearchSkill.search_with_outcome` when they need to distinguish an
+empty result set from a provider failure.
 
 ---
 
@@ -280,6 +297,7 @@ Hard prohibitions.
 ```bash
 python -m pytest -q
 python -m pytest -q tests/test_skills.py tests/test_agents.py
+python -m pytest -q tests/test_literature_search_outcomes.py
 python -m pytest -q tests/test_api.py tests/test_workspace_api.py
 python -m researchos.eval
 researchos-api
@@ -303,6 +321,12 @@ researchos-api
 | `CriticAgent` only parses node status | Citations can be dead | Provide resolver; Harikesh owns verdict |
 | `ReviewWriterSkill` emits `[Node:ID]` | Not DOI citations | Do not overclaim; validate IDs |
 | `tests/llm.py` executed network code at import | Removed in PR #3 | Do not reintroduce network code at import time |
+
+**Fixed 26 Oct 2026:** `search_arxiv`, `search_semantic_scholar`, and
+`LiteratureSearchSkill` still return lists for compatibility, but the
+`*_outcome` variants and `search_with_outcome()` now report provider status,
+error type, status code, cache origin, and latency. Malformed provider
+payloads are errors, and failed calls are not cached.
 
 ---
 
