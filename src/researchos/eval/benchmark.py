@@ -1,11 +1,11 @@
-"""Evaluation harness for truth maintenance and multi-agent research.
+"""Evaluation harness for truth maintenance and retrieval.
 
 Compares three systems from the proposal (Section 5.2):
 
-- ``ctxflow_graph`` — ResearchOS: CtxFlow graph memory + four agents.
+- ``ctxflow_graph`` — CtxFlow graph memory queried directly.
 - ``flat_rag`` — Baseline A: flat vector retrieval, single agent.
-- ``flat_rag_multi_agent`` — Baseline B: flat vector retrieval, same
-  four-agent pipeline shape.
+- ``flat_rag_multi_agent`` — Baseline B: flat vector retrieval with a
+  four-stage pipeline shape simulated by the deterministic baseline.
 
 The harness reports answer accuracy, supersession-defence rate,
 provenance accuracy, and approximate token cost per query.
@@ -54,14 +54,52 @@ class BenchmarkRunner:
             "flat_rag_multi_agent": self._evaluate_flat_rag(MultiAgentFlatRAG),
         }
 
-    def run_report(self) -> Dict[str, Any]:
+    def run_report(
+        self,
+        metrics: Optional[Dict[str, EvaluationMetrics]] = None,
+    ) -> Dict[str, Any]:
         """Return a JSON-serializable report for all systems."""
-        metrics = self.run_benchmark()
+        metrics = metrics or self.run_benchmark()
         return {
             "suite": self.suite.name,
             "questions": len(self.suite.questions),
             "papers": len(self.suite.papers),
             "k": self.k,
+            "configuration": {
+                "provider": "none (deterministic local evaluation)",
+                "model": "none",
+                "prompts": "none",
+                "shared_controls": {
+                    "suite": self.suite.name,
+                    "retrieval_k": self.k,
+                    "llm_calls": 0,
+                },
+                "systems": {
+                    "ctxflow_graph": {
+                        "method": "direct CtxFlow graph query; no agent pipeline",
+                        "contradiction_detection": False,
+                    },
+                    "flat_rag": {
+                        "method": "single-agent-shaped flat retrieval",
+                        "embedder": "256-dimensional deterministic HashingEmbedder",
+                    },
+                    "flat_rag_multi_agent": {
+                        "method": "deterministic retriever/reader/synthesizer/critic-shaped flat retrieval",
+                        "embedder": "256-dimensional deterministic HashingEmbedder",
+                        "retriever_candidates": 2 * self.k,
+                        "final_context_k": self.k,
+                    },
+                },
+                "token_estimate": "ceil(characters / 4)",
+                "supersession_ground_truth": (
+                    "Explicitly injected from the synthetic dataset; "
+                    "does not evaluate automatic contradiction detection."
+                ),
+            },
+            "question_rationales": [
+                {"id": question.id, "rationale": question.rationale}
+                for question in self.suite.questions
+            ],
             "systems": {
                 name: result.to_dict() for name, result in metrics.items()
             },
@@ -144,7 +182,7 @@ class BenchmarkRunner:
                     old_node.status = NodeStatus.SUPERSEDED
                     old_node.superseded_by = claim_node_id
 
-        metrics = EvaluationMetrics(system_name="CtxFlow graph + 4 agents")
+        metrics = EvaluationMetrics(system_name="CtxFlow graph (direct query)")
 
         for question in self.suite.questions:
             results = ctx.query(

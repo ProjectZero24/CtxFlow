@@ -3,8 +3,8 @@
 Two baselines are provided, matching Section 5.2 of the proposal:
 
 - **Baseline A** — flat vector retrieval with a single agent.
-- **Baseline B** — the same flat vector retrieval, but driven through the
-  four-agent Retriever → Reader → Synthesizer → Critic pipeline.
+- **Baseline B** — the same flat vector retrieval, with deterministic stages
+  shaped like Retriever → Reader → Synthesizer → Critic.
 
 Neither baseline has access to graph structure, supersession edges, or
 provenance chains, which is exactly the contrast the evaluation is
@@ -235,14 +235,14 @@ class SingleAgentFlatRAG:
 
 
 class MultiAgentFlatRAG(SingleAgentFlatRAG):
-    """Baseline B: four-agent pipeline over the same flat memory.
+    """Baseline B: four pipeline-shaped stages over the same flat memory.
 
     The pipeline is intentionally honest about its limits: the Critic
     has no supersession edges or provenance graph to consult, so it can
     only report that no structural verification was possible.
     """
 
-    system_name = "Flat vector RAG (4-agent pipeline)"
+    system_name = "Flat vector RAG (4-stage pipeline-shaped baseline)"
 
     def answer(self, question: "BenchmarkQuestion") -> BaselineAnswer:
         # Retriever: over-fetch candidates from flat memory.

@@ -181,6 +181,7 @@ class EvaluationMetrics:
         )
         if (
             question_correct
+            and trace_found
             and ground_truth
             and cited_sources
             and ground_truth & set(cited_sources)
