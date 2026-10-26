@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -157,6 +158,7 @@ class TestConfiguration:
             ({"RESEARCHOS_MODEL_TIMEOUT_S": "abc", "GROQ_API_KEY": "k"}, "number"),
             ({"RESEARCHOS_MODEL_TIMEOUT_S": "0", "GROQ_API_KEY": "k"}, "> 0"),
             ({"RESEARCHOS_MAX_RETRIES": "-1", "GROQ_API_KEY": "k"}, ">= 0"),
+            ({"RESEARCHOS_MAX_RETRIES": "1000", "GROQ_API_KEY": "k"}, "<= 10"),
         ],
     )
     def test_invalid_config_raises(self, env, message):
@@ -237,6 +239,15 @@ class TestCompletion:
             "role": "system",
             "content": "be terse",
         }
+
+    def test_per_call_temperature_is_validated(self):
+        gateway, client, _ = gateway_with([response("ok")])
+
+        with pytest.raises(ValueError, match="temperature"):
+            gateway.complete("prompt", temperature=9.0)
+
+        assert client.completions.calls == []
+        assert gateway.usage()["calls"] == 0
 
     def test_usage_is_estimated_when_provider_omits_it(self):
         gateway, _, _ = gateway_with([response("abcd" * 10, None, None, None)])
@@ -429,3 +440,103 @@ class TestServerWiring:
             assert client.get("/api/model/usage").json()["enabled"] is True
 
         assert fake_client.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Failure propagation: a failed model call must not look like success
+# ---------------------------------------------------------------------------
+
+class BrokenGateway:
+    """Callable gateway whose provider is always unreachable."""
+
+    config = SimpleNamespace(provider="groq", model_id="broken")
+
+    def __call__(self, prompt, system=""):
+        raise ModelCallError("provider unavailable", attempts=3)
+
+    def complete(self, *args, **kwargs):
+        raise ModelCallError("provider unavailable", attempts=3)
+
+    def usage(self):
+        return {"calls": 0, "failures": 1}
+
+    def usage_by_model(self):
+        return {}
+
+    def close(self):
+        pass
+
+
+def seed_claim(app):
+    app.state.ctxflow.ingest(
+        content="Algorithm X reaches 71% accuracy on the benchmark.",
+        node_type="claim",
+        tags={"algorithm-x", "accuracy"},
+        metadata={"project_id": "default"},
+    )
+
+
+class TestSynthesisFailurePropagation:
+    def test_chat_reports_llm_failure_in_alerts(self):
+        app = create_app(model_gateway=BrokenGateway())
+        with TestClient(app) as client:
+            seed_claim(app)
+            res = client.post(
+                "/api/chat",
+                json={"query": "What accuracy does Algorithm X reach?"},
+            )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert any(alert["type"] == "llm_failure" for alert in body["alerts"])
+        assert "synthesis model was unavailable" in body["answer"]
+
+    def test_stream_marks_synthesizer_as_failed(self):
+        app = create_app(model_gateway=BrokenGateway())
+        with TestClient(app) as client:
+            seed_claim(app)
+            with client.stream(
+                "GET",
+                "/api/stream",
+                params={"query": "What accuracy does Algorithm X reach?"},
+            ) as response:
+                done = None
+                event = None
+                for line in response.iter_lines():
+                    if line.startswith("event:"):
+                        event = line[len("event:"):].strip()
+                    elif line.startswith("data:"):
+                        payload = json.loads(line[len("data:"):].strip())
+                        if event == "done":
+                            done = payload
+                            break
+
+        assert done is not None
+        synthesizer = next(
+            item
+            for item in done["data"]["pipeline_results"]
+            if item["agent"] == "synthesizer"
+        )
+        assert synthesizer["success"] is False
+        assert "Model synthesis failed" in synthesizer["error"]
+
+
+# ---------------------------------------------------------------------------
+# Test-environment isolation
+# ---------------------------------------------------------------------------
+
+class TestEnvironmentIsolation:
+    def test_no_ambient_model_configuration(self):
+        import os
+
+        assert "RESEARCHOS_MODEL_ENABLED" not in os.environ
+        assert model_enabled() is False
+
+    def test_project_dotenv_cannot_enable_the_gateway(self, tmp_path, monkeypatch):
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(
+            "RESEARCHOS_MODEL_ENABLED=1\nGROQ_API_KEY=fake\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert model_enabled() is False

@@ -259,6 +259,13 @@ Every call records prompt/completion/total tokens and latency (estimating at
 process totals at `GET /api/model/usage`; `gateway.usage()` and
 `gateway.usage_by_model()` expose the same counters in-process.
 
+Failures are not hidden: the gateway raises `ModelCallError` after its bounded
+retries, and the synthesizer reports `success=false` with an `llm_failure`
+alert instead of returning a 200 that looks successful. `RESEARCHOS_MAX_RETRIES`
+is capped at 10, and `temperature` overrides are validated against `0..2`.
+The test suite clears model variables and ignores the project `.env`, so local
+provider settings never leak into it.
+
 ### Evaluation
 
 ```bash

@@ -256,7 +256,8 @@ Hard prohibitions.
 Source: `src/researchos/gateway/model.py` (contract), `src/researchos/api/server.py` (wiring).
 
 **Status (26 Oct 2026):** implemented on `feat/adithyan-model-gateway`, based
-on `Adi/feat/v1@08d0a6a`. `python -m pytest -q` → **183 passed, 6 skipped**.
+on `Adi/feat/v1@08d0a6a`. `python -m pytest -q` → **189 passed, 6 skipped**
+(27 Oct: failure propagation, validation bounds, and test-env isolation added).
 
 ### What you publish
 
@@ -286,7 +287,7 @@ if gateway is not None:
 | `RESEARCHOS_MODEL_PROVIDER` | `groq` \| `ollama` \| `nvidia` \| `openrouter` \| `hf` | `groq` |
 | `RESEARCHOS_MODEL_ID` | provider model id | per preset |
 | `RESEARCHOS_MODEL_TIMEOUT_S` | seconds | `20` |
-| `RESEARCHOS_MAX_RETRIES` | retries **after** the first attempt | `2` |
+| `RESEARCHOS_MAX_RETRIES` | retries **after** the first attempt (0–10) | `2` |
 | `RESEARCHOS_MODEL_BASE_URL` | optional endpoint override | preset URL |
 | `RESEARCHOS_MODEL_API_KEY` | optional generic key | provider env var |
 
@@ -303,15 +304,26 @@ raises `ModelConfigError` instead of silently degrading.
 
 ### Behaviour and failure semantics
 
-- Temperature `0`, `max_tokens=512`, one model call per node (System-1 discipline).
-- Retries are bounded: `MAX_RETRIES=2` means at most three attempts. Only
-  transient failures retry (HTTP 408/409/425/429, 5xx, timeout, connection,
-  rate-limit, empty completion). Other 4xx errors fail immediately.
+- Defaults are `temperature=0`, `max_tokens=512`, one model call per node
+  (System-1 discipline). `temperature` and `max_tokens` are per-call
+  overrides, validated to `0..2` and `>0`; the default is not re-enforced.
+- Retries are bounded: `MAX_RETRIES=2` means at most three attempts, and the
+  configured value is capped at `10` so a typo cannot produce a retry storm.
+  Only transient failures retry (HTTP 408/409/425/429, 5xx, timeout,
+  connection, rate-limit, empty completion). Other 4xx errors fail
+  immediately.
 - Exhausted calls raise `ModelCallError` with `attempts` and `last_error`;
-  malformed JSON after one repair raises `ModelResponseError`. Nothing is
-  swallowed and there is no implicit fallback to a different model.
+  malformed JSON after one repair raises `ModelResponseError`. The gateway
+  never returns a placeholder answer and never falls back to a different
+  model. Callers must handle the exception: `SynthesizerAgent` marks the step
+  `success=False` and adds an `llm_failure` alert with a degraded
+  evidence-only answer, so `/api/chat` and SSE show the failure instead of a
+  silent HTTP 200.
 - `complete_json` uses provider JSON mode when the preset supports it,
-  tolerates markdown fences/prose, and performs exactly one repair call.
+  tolerates markdown fences/prose, and performs exactly one repair call. It is
+  part of the published gateway contract; the current agent path
+  (`LLMExtractor`) uses the plain `(prompt, system) -> str` callable, so JSON
+  mode is opt-in for future extractors.
 
 ### Cost and latency
 
@@ -329,6 +341,10 @@ the recorded token totals with current rates.
 - Do not import `openai` (or another provider SDK) from an agent, skill, route, script, or test. Use the injected callable or `create_model_gateway()`.
 - Do not put routing, guardrail policy, or prompt design in `gateway/model.py`; it is transport + accounting only.
 - Tests must inject a fake client or gateway; never call a live provider in CI.
+- `tests/conftest.py` clears `RESEARCHOS_MODEL_*` and provider keys and ignores
+  the project `.env` for every test, so a developer's local provider settings
+  cannot change test behaviour or add network latency. Tests that need a
+  gateway pass one explicitly.
 
 ---
 

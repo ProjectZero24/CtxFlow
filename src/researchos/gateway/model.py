@@ -137,12 +137,19 @@ PROVIDER_PRESETS: Dict[str, ProviderPreset] = {
 # Configuration
 # ---------------------------------------------------------------------------
 
+# Upper bound on retries after the first attempt. Three attempts is the
+# documented default; ten is already generous and still bounded.
+_MAX_RETRIES = 10
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Resolved gateway configuration.
 
     ``max_retries`` is the number of retries *after* the first attempt, so
-    the default of ``2`` allows at most three attempts per call.
+    the default of ``2`` allows at most three attempts per call. It is capped
+    at :data:`_MAX_RETRIES` so a typo cannot turn one call into an hours-long
+    retry storm.
     """
 
     provider: str = "groq"
@@ -169,6 +176,11 @@ class ModelConfig:
             raise ModelConfigError("RESEARCHOS_MODEL_TIMEOUT_S must be > 0")
         if self.max_retries < 0:
             raise ModelConfigError("RESEARCHOS_MAX_RETRIES must be >= 0")
+        if self.max_retries > _MAX_RETRIES:
+            raise ModelConfigError(
+                f"RESEARCHOS_MAX_RETRIES must be <= {_MAX_RETRIES}, "
+                f"got {self.max_retries}"
+            )
         if self.max_tokens <= 0:
             raise ModelConfigError("max_tokens must be > 0")
         if not 0.0 <= self.temperature <= 2.0:
@@ -534,6 +546,8 @@ class ModelGateway:
         if token_limit <= 0:
             raise ValueError("max_tokens must be > 0")
         temp = self.config.temperature if temperature is None else temperature
+        if not 0.0 <= temp <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
 
         messages = []
         if system:
