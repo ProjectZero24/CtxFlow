@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -196,52 +197,90 @@ def _paper_to_dict(paper: PaperResult) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class _QueryCache:
-    """Persistent key-value cache backed by SQLite."""
+    """Persistent key-value cache backed by SQLite.
+
+    One connection is opened per calling thread. SQLite connections are not
+    shareable across threads, and the API runs the agent pipeline in a worker
+    thread (``run_in_executor``) while tests and scripts may use the cache from
+    the main thread. Per-thread connections keep both paths working; a lock
+    serializes writes so concurrent workers cannot deadlock on the file lock.
+    """
 
     def __init__(self, db_path: str, ttl: int = _DEFAULT_TTL) -> None:
         self.ttl = ttl
         self._db_path = db_path
-        self._conn = sqlite3.connect(db_path)
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS cache (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                ts    REAL NOT NULL
+        self._local = threading.local()
+        self._lock = threading.RLock()
+        self._connections: List[sqlite3.Connection] = []
+        # Create the schema eagerly so an empty cache file is ready before any
+        # worker thread touches it.
+        self._connection()
+
+    def _connection(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(
+                self._db_path, timeout=10.0, check_same_thread=False
             )
-            """
-        )
-        self._conn.commit()
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    ts    REAL NOT NULL
+                )
+                """
+            )
+            conn.commit()
+            self._local.conn = conn
+            with self._lock:
+                self._connections.append(conn)
+        return conn
 
     def get(self, key: str) -> Optional[str]:
         """Return cached value if present and not expired, else None."""
-        row = self._conn.execute(
-            "SELECT value, ts FROM cache WHERE key = ?", (key,)
-        ).fetchone()
-        if row is None:
-            return None
-        value, ts = row
-        if time.time() - ts > self.ttl:
-            self._conn.execute("DELETE FROM cache WHERE key = ?", (key,))
-            self._conn.commit()
-            return None
-        return value
+        with self._lock:
+            row = self._connection().execute(
+                "SELECT value, ts FROM cache WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            value, ts = row
+            if time.time() - ts > self.ttl:
+                self._connection().execute(
+                    "DELETE FROM cache WHERE key = ?", (key,)
+                )
+                self._connection().commit()
+                return None
+            return value
 
     def set(self, key: str, value: str) -> None:
         """Insert or update a cache entry."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO cache (key, value, ts) VALUES (?, ?, ?)",
-            (key, value, time.time()),
-        )
-        self._conn.commit()
+        with self._lock:
+            conn = self._connection()
+            conn.execute(
+                "INSERT OR REPLACE INTO cache (key, value, ts) VALUES (?, ?, ?)",
+                (key, value, time.time()),
+            )
+            conn.commit()
 
     def clear(self) -> None:
         """Drop all cached entries."""
-        self._conn.execute("DELETE FROM cache")
-        self._conn.commit()
+        with self._lock:
+            conn = self._connection()
+            conn.execute("DELETE FROM cache")
+            conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            for conn in self._connections:
+                try:
+                    conn.close()
+                except sqlite3.Error:  # pragma: no cover - best effort teardown
+                    logger.debug("Ignoring cache close error", exc_info=True)
+            self._connections.clear()
+            self._local = threading.local()
+
 
 
 def _normalize_query(query: str) -> str:
@@ -649,18 +688,27 @@ class LiteratureSearchSkill:
 
     @staticmethod
     def _dedupe(results: List[PaperResult]) -> List[PaperResult]:
-        """Deduplicate by title (case-insensitive).
+        """Deduplicate by title, keeping results that have no title.
 
         Metadata-based dedupe (DOI -> arXiv ID -> title) is a separate gap and
-        is intentionally not changed here.
+        is intentionally not changed here. Results without a title used to be
+        dropped entirely; they are now kept and identified by DOI, arXiv ID, or
+        URL when one is available.
         """
-        seen_titles: set = set()
+        seen_keys: set = set()
         deduped: List[PaperResult] = []
         for result in results:
-            key = result.title.lower().strip()
-            if key and key not in seen_titles:
-                seen_titles.add(key)
-                deduped.append(result)
+            key = (
+                (result.title or "").strip().lower()
+                or (result.doi or "").strip().lower()
+                or (result.arxiv_id or "").strip().lower()
+                or (result.url or "").strip().lower()
+            )
+            if key:
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+            deduped.append(result)
         return deduped
 
     @staticmethod
@@ -753,19 +801,30 @@ class LiteratureSearchSkill:
         if not isinstance(payload, dict):
             return None
 
-        try:
-            status = SearchStatus(payload.get("status", SearchStatus.OK.value))
-        except ValueError:
-            status = SearchStatus.OK
-        if status is SearchStatus.ERROR:
-            return None
-
         raw_results = payload.get("results", [])
         if not isinstance(raw_results, list):
             return None
         try:
             results = [PaperResult(**item) for item in raw_results]
         except (TypeError, ValueError):
+            return None
+
+        raw_status = payload.get("status")
+        if raw_status is None:
+            status = SearchStatus.OK if results else SearchStatus.EMPTY
+        else:
+            try:
+                status = SearchStatus(raw_status)
+            except ValueError:
+                # Unknown status means the entry was written by a version we
+                # do not understand: refetch instead of guessing "ok".
+                logger.warning(
+                    "Discarding cache entry with unknown status %r for %s",
+                    raw_status,
+                    provider,
+                )
+                return None
+        if status is SearchStatus.ERROR:
             return None
 
         return ProviderOutcome(

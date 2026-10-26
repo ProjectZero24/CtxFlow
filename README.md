@@ -243,6 +243,21 @@ found". It reports `skipped` when the graph already has enough context, and
 `unknown` for injected custom skills that only implement `search()`. Provider
 errors are never cached; successful and genuinely empty responses are.
 
+The status is carried all the way out:
+
+- `POST /api/search` returns `status` (`ok` / `empty` / `partial` / `error` /
+  `unknown`), per-provider `providers` detail (error type, HTTP status, cache
+  hit, latency), and an `errors` map, alongside the usual `results` / `total`.
+- `POST /api/chat` and the `/api/stream` `done` event include the
+  `external_search` payload, so a client can distinguish "no papers" from
+  "provider down".
+- A total provider failure marks the retriever step failed
+  (`success=false`, error listing per-provider causes) and the router reports
+  `success=false` with `metadata.partial` and `metadata.failed_agents`. A
+  partial failure stays successful but is flagged `metadata.degraded`.
+- The cache opens one SQLite connection per thread, so the API's worker-thread
+  pipeline (`/api/stream`) no longer crashes the retriever.
+
 ### Evaluation
 
 ```bash
@@ -268,6 +283,6 @@ objects when available.
 ```bash
 pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
        tests/test_workspace_api.py tests/test_eval_harness.py \
-       tests/test_literature_search_outcomes.py
+       tests/test_literature_search_outcomes.py tests/test_evidence_api.py
 ```
 

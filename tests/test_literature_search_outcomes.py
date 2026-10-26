@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 
 import pytest
@@ -440,3 +441,118 @@ class TestRetrieverOutcomeWiring:
         assert result.data["external_results"][0]["title"] == "Legacy Result"
         assert result.data["external_search"]["status"] == "unknown"
         assert result.metadata["external_search_status"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Dedupe: untitled results are no longer dropped
+# ---------------------------------------------------------------------------
+
+class TestDedupe:
+    def test_untitled_result_is_kept(self):
+        kept = LiteratureSearchSkill._dedupe(
+            [PaperResult(title=""), PaperResult(title="Real Paper")]
+        )
+        assert [p.title for p in kept] == ["", "Real Paper"]
+
+    def test_all_untitled_results_are_kept(self):
+        kept = LiteratureSearchSkill._dedupe(
+            [PaperResult(title=""), PaperResult(title="   ")]
+        )
+        assert len(kept) == 2
+
+    def test_untitled_results_dedupe_by_doi(self):
+        kept = LiteratureSearchSkill._dedupe(
+            [
+                PaperResult(title="", doi="10.1000/x"),
+                PaperResult(title="", doi="10.1000/X"),
+            ]
+        )
+        assert len(kept) == 1
+
+    def test_titles_still_dedupe_case_insensitively(self):
+        kept = LiteratureSearchSkill._dedupe(
+            [PaperResult(title="Attention Is All You Need"), PaperResult(title=" attention is all you need ")]
+        )
+        assert len(kept) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cache robustness
+# ---------------------------------------------------------------------------
+
+class TestCacheRobustness:
+    def test_unknown_cached_status_forces_refetch(self, monkeypatch, tmp_path):
+        skill = LiteratureSearchSkill(cache_dir=str(tmp_path))
+        skill._cache.set(
+            _cache_key("arxiv", "q", 5),
+            json.dumps({"status": "bogus", "results": []}),
+        )
+        fetched = []
+
+        def fake_fetch(provider, query, max_results):
+            fetched.append(provider)
+            return ProviderOutcome(
+                provider=provider,
+                status=SearchStatus.OK,
+                results=[paper("Fresh Paper")],
+            )
+
+        monkeypatch.setattr(
+            LiteratureSearchSkill, "_fetch_outcome", staticmethod(fake_fetch)
+        )
+
+        outcome = skill.search_with_outcome("q", provider="arxiv")
+        skill.close()
+
+        assert fetched == ["arxiv"]
+        assert outcome.status is SearchStatus.OK
+        assert outcome.results[0].title == "Fresh Paper"
+
+    def test_cache_is_usable_from_worker_threads(self, tmp_path):
+        skill = LiteratureSearchSkill(cache_dir=str(tmp_path))
+        skill._cache.set("k", "v")
+        seen = {}
+        errors = []
+
+        def worker():
+            try:
+                seen["value"] = skill._cache.get("k")
+                skill._cache.set("k2", "v2")
+            except Exception as exc:  # noqa: BLE001 - reported below
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        assert errors == []
+        assert seen["value"] == "v"
+        assert skill._cache.get("k2") == "v2"
+        skill.close()
+
+    def test_search_with_outcome_works_off_the_main_thread(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "researchos.skills.literature_search.search_arxiv_outcome",
+            lambda *a, **k: ProviderOutcome(
+                provider="arxiv", status=SearchStatus.OK, results=[paper("T")]
+            ),
+        )
+        skill = LiteratureSearchSkill(cache_dir=str(tmp_path))
+        errors = []
+        statuses = []
+
+        def worker():
+            try:
+                statuses.append(skill.search_with_outcome("q", provider="arxiv").status)
+            except Exception as exc:  # noqa: BLE001 - reported below
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+        skill.close()
+
+        assert errors == []
+        assert statuses == [SearchStatus.OK]

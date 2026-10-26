@@ -146,14 +146,33 @@ class RetrieverAgent(BaseAgent):
             }
 
         external_search = result_data["external_search"]
+        external_status = external_search.get("status")
+        degraded = external_status in ("partial", "error")
         metadata = {
             "internal_count": len(internal_results),
             "has_knowledge_gap": has_gap,
             "external_count": len(result_data.get("external_results", [])),
-            "external_search_status": external_search["status"],
+            "external_search_status": external_status,
+            "degraded": degraded,
         }
         if external_search.get("errors"):
             metadata["external_errors"] = external_search["errors"]
+
+        # A total provider failure is a failed retrieval, not a successful
+        # "no papers found". Partial failures stay successful but are flagged
+        # as degraded in metadata.
+        if external_status == "error":
+            errors = external_search.get("errors") or {}
+            detail = "; ".join(
+                f"{provider}: {message}" for provider, message in errors.items()
+            ) or "all providers failed"
+            return AgentResult(
+                agent_name=self.name,
+                success=False,
+                error=f"External literature search failed ({detail}).",
+                data=result_data,
+                metadata=metadata,
+            )
 
         return AgentResult(
             agent_name=self.name,

@@ -149,6 +149,8 @@ The skills split (commit `6ae8b0f`) assigns you evidence/retrieval. The older la
 | Gap | Status |
 |---|---|
 | Explicit provider outcomes (`ok` / `empty` / `partial` / `error`), failure metadata, and failure-aware cache | **Implemented** 26 Oct 2026 on `feat/adithyan-evidence`; `tests/test_literature_search_outcomes.py` |
+| Outcome reaches consumers: `/api/search` status + per-provider errors, `/api/chat` & SSE `external_search`, failed/degraded pipeline status | **Implemented** 27 Oct 2026; `tests/test_evidence_api.py` |
+| Cross-thread cache safety (the API runs the pipeline in a worker thread) | **Implemented** 27 Oct 2026; per-thread SQLite connections |
 | Metadata normalization + dedupe by DOI → arXiv ID → cautious title | Next |
 | PDF downloader with allowlist, size/time caps, `access_status` | Not started |
 | Page/section provenance through extraction and persistence | Not started |
