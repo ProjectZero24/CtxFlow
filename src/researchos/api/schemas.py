@@ -26,7 +26,10 @@ class ChatRequest(BaseModel):
         False, description="Whether to include research trace in the response."
     )
     token_budget: int = Field(
-        2048, description="Token budget for context assembly."
+        2048,
+        ge=1,
+        le=100_000,
+        description="Token budget for context assembly.",
     )
 
 
@@ -136,6 +139,29 @@ class GraphDataResponse(BaseModel):
 
     nodes: List[NodeResponse] = Field(default_factory=list)
     edges: List[EdgeResponse] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Demo corpus
+# ---------------------------------------------------------------------------
+
+class DemoSeedRequest(BaseModel):
+    """Request to load the checked-in demo corpus."""
+
+    project_id: str = Field("default", description="Project workspace ID.")
+
+
+class DemoSeedResponse(BaseModel):
+    """Result of loading the demo corpus (idempotent per arXiv ID)."""
+
+    success: bool = True
+    papers_ingested: int = 0
+    claims_ingested: int = 0
+    papers_skipped: int = 0
+    nodes: int = 0
+    edges: int = 0
+    project_id: str = "default"
+    message: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -151,6 +151,12 @@ code {
   min-height: 0;
   overflow: hidden;
 }
+.head-actions {
+  display: flex;
+  gap: .4rem;
+  align-items: center;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -250,6 +256,41 @@ code {
   text-transform: uppercase;
   letter-spacing: .06em;
 }
+.chat-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  padding: .55rem .85rem 0;
+  flex-wrap: wrap;
+}
+
+.budget-control {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+.budget-control input {
+  width: 84px;
+  padding: .25rem .4rem;
+}
+
+.context-usage {
+  color: var(--muted);
+  font-size: .7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .15rem .5rem;
+}
+
+.context-usage.over {
+  color: #fbbf24;
+  border-color: #fbbf24;
+}
+
 .composer {
   display: flex;
   gap: .5rem;

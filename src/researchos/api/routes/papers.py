@@ -13,6 +13,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ctxflow.models import NodeStatus
 from researchos.api.schemas import (
+    DemoSeedRequest,
+    DemoSeedResponse,
     EdgeResponse,
     GraphDataResponse,
     GraphStatsResponse,
@@ -23,6 +25,7 @@ from researchos.api.schemas import (
     TraceResponse,
     TraceStepResponse,
 )
+from researchos.demo import seed_demo_corpus
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,29 @@ def _title_tags(title: str) -> set:
         if len(cleaned) > 3:
             tags.add(cleaned)
     return tags
+
+
+@router.post("/demo/seed", response_model=DemoSeedResponse)
+async def seed_demo(request: DemoSeedRequest) -> DemoSeedResponse:
+    """Load the checked-in demo corpus into the graph (idempotent)."""
+    ctxflow = _app_state.get("ctxflow")
+    if ctxflow is None:
+        raise HTTPException(503, detail="CtxFlow not initialized")
+
+    try:
+        stats = seed_demo_corpus(ctxflow, project_id=request.project_id)
+        total = stats["papers_ingested"] + stats["papers_skipped"]
+        return DemoSeedResponse(
+            **stats,
+            message=(
+                f"Demo corpus ready: ingested {stats['papers_ingested']} paper(s) "
+                f"and {stats['claims_ingested']} claim(s); skipped "
+                f"{stats['papers_skipped']} of {total} already present."
+            ),
+        )
+    except Exception as exc:
+        logger.error("Demo seed failed: %s", exc, exc_info=True)
+        raise HTTPException(500, detail=str(exc))
 
 
 @router.post("/papers/ingest", response_model=PaperIngestResponse)

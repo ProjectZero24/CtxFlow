@@ -408,10 +408,13 @@ async function askQuestion(query) {
 
   addMessage("user", query);
 
+  const budget = Number($("#token-budget").value) || 2048;
+
   try {
     const response = await jsonRequest("/api/chat", {
       query,
       include_trace: true,
+      token_budget: budget,
     });
 
     const badge = $("#intent-badge");
@@ -426,6 +429,33 @@ async function askQuestion(query) {
       chip.type = "button";
       chip.addEventListener("click", () => showTrace(nodeId));
       meta.push(chip);
+    }
+
+    const usage = response.metadata && response.metadata.context_usage;
+    if (usage) {
+      const dropped = usage.nodes_dropped
+        ? ` · ${usage.nodes_dropped} dropped`
+        : "";
+      meta.push(
+        el(
+          "span",
+          "context-usage",
+          `Context ${usage.nodes_used}/${usage.nodes_retrieved} nodes · ` +
+            `${usage.tokens_used}/${usage.token_budget} tokens${dropped}`,
+        ),
+      );
+    }
+
+    const search = response.external_search;
+    if (search && search.status) {
+      const bad = search.status === "error" || search.status === "partial";
+      meta.push(
+        el(
+          "span",
+          `context-usage${bad ? " over" : ""}`,
+          `search: ${search.status}`,
+        ),
+      );
     }
 
     const article = addMessage(
@@ -547,6 +577,22 @@ $("#chat-input").addEventListener("keydown", (event) => {
 
 $("#refresh-btn").addEventListener("click", () => {
   Promise.all([loadHealth(), loadNotes(), loadGraph()]);
+});
+
+$("#demo-btn").addEventListener("click", async () => {
+  const button = $("#demo-btn");
+  setBusy(button, true, "Loading…");
+  try {
+    const response = await jsonRequest("/api/demo/seed", {
+      project_id: projectId(),
+    });
+    toast(response.message || "Demo corpus loaded.");
+    await Promise.all([loadHealth(), loadNotes(), loadGraph()]);
+  } catch (error) {
+    toast(`Demo corpus failed: ${error.message}`, true);
+  } finally {
+    setBusy(button, false);
+  }
 });
 
 $("#project-id").addEventListener("change", () => {

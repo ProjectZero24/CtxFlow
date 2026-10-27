@@ -315,7 +315,11 @@ def create_app(
         )
 
     @app.get("/api/stream", tags=["stream"])
-    async def stream_query(query: str, request: Request):
+    async def stream_query(
+        query: str,
+        request: Request,
+        token_budget: int = 2048,
+    ):
         """SSE streaming endpoint for real-time multi-agent execution events."""
         skill_router: Optional[SkillRouter] = state.get("router")
         if not skill_router:
@@ -329,7 +333,14 @@ def create_app(
             await asyncio.sleep(0.01)
 
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: skill_router.run(query=query))
+            budget = max(1, int(token_budget))
+            result = await loop.run_in_executor(
+                None,
+                lambda: skill_router.run(
+                    query=query,
+                    context={"token_budget": budget},
+                ),
+            )
 
             # Stream pipeline progress events
             pipeline_results = (result.data or {}).get("pipeline_results", [])

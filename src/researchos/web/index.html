@@ -31,7 +31,10 @@
     <section class="panel library" aria-label="Project library">
       <div class="panel-head">
         <h2>Library</h2>
-        <button class="ghost" id="refresh-btn" type="button">Refresh</button>
+        <div class="head-actions">
+          <button class="ghost" id="demo-btn" type="button">Load demo corpus</button>
+          <button class="ghost" id="refresh-btn" type="button">Refresh</button>
+        </div>
       </div>
 
       <details open>
@@ -90,11 +93,21 @@
       <div class="messages" id="messages">
         <article class="message assistant">
           <div class="message-body">
-            Ask a question about your library. Try
-            <em>“What is the verified accuracy of Algorithm X?”</em> or
-            <em>“Trace the provenance of this claim.”</em>
+            Load the demo corpus, then ask
+            <em>“How does GraphRAG compare with flat vector retrieval?”</em>
+            or use <em>“Find recent papers about GraphRAG.”</em> for a live
+            literature run. Reduce the context budget to watch the synthesizer
+            drop lower-scored nodes.
           </div>
         </article>
+      </div>
+      <div class="chat-controls">
+        <label class="budget-control">
+          Context budget
+          <input id="token-budget" type="number" min="200" max="20000" step="100" value="2048" />
+          tokens
+        </label>
+        <span class="hint">Graph nodes → budgeted prompt → cited answer</span>
       </div>
       <form id="chat-form" class="composer">
         <textarea id="chat-input" rows="2" placeholder="Ask a research question…" required></textarea>

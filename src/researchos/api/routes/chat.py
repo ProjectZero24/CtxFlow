@@ -52,7 +52,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(503, detail="Agent router not initialized")
 
     try:
-        result = skill_router.run(query=request.query)
+        result = skill_router.run(
+            query=request.query,
+            context={"token_budget": request.token_budget},
+        )
 
         data = result.data or {}
         pipeline_result = data.get("result", {}) or {}

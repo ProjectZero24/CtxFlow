@@ -157,6 +157,7 @@ class CriticAgent(BaseAgent):
                 "verdict": verdict,
                 "verified": is_verified,
                 "answer": answer,
+                "cited_nodes": list(cited_nodes),
                 "validations": validations,
                 "supersession_warnings": supersession_warnings,
                 "contradiction_warnings": contradiction_warnings,
