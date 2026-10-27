@@ -1,0 +1,10 @@
+{
+  "id": "fixture-basic",
+  "text": "The agent prefers concise research summaries.",
+  "memory_type": "user_preference",
+  "tier": "episodic",
+  "session_id": "session-basic",
+  "source": "user",
+  "importance": 0.8,
+  "entities": ["research summaries"]
+}

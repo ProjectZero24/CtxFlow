@@ -1,0 +1,22 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.coverage
+htmlcov/
+graphify-out/
+.agents/
+.cache/
+.vscode/
+.venv
+build/
+dist/
+
+# scratch notes
+s52_fixed.txt
+test456.txt
