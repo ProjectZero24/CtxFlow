@@ -33,7 +33,13 @@ from researchos.agents.trace import TraceAgent
 from researchos.api.routes import chat as chat_routes
 from researchos.api.routes import notes as notes_routes
 from researchos.api.routes import papers as papers_routes
-from researchos.api.schemas import HealthResponse, SkillInfoResponse, SkillListResponse
+from researchos.api.schemas import (
+    HealthResponse,
+    ModelUsageResponse,
+    SkillInfoResponse,
+    SkillListResponse,
+)
+from researchos.gateway import ModelGateway, create_model_gateway
 from researchos.skills.graph_query import GraphQuerySkill
 from researchos.skills.literature_search import LiteratureSearchSkill
 from researchos.skills.paper_reader import PaperReaderSkill
@@ -51,6 +57,7 @@ def create_app(
     skill_registry: Optional[SkillRegistry] = None,
     router_agent: Optional[SkillRouter] = None,
     enable_cors: bool = True,
+    model_gateway: Optional[ModelGateway] = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -64,6 +71,10 @@ def create_app(
         Existing SkillRouter instance. If None, composed with all agents.
     enable_cors : bool
         Whether to enable permissive CORS for web frontends.
+    model_gateway : ModelGateway | None
+        Injected gateway (tests/embedders). If None, the gateway is created
+        from ``RESEARCHOS_MODEL_*`` only when ``RESEARCHOS_MODEL_ENABLED`` is
+        truthy; otherwise no model is wired and behaviour is unchanged.
     """
 
     # Shared state container
@@ -77,11 +88,25 @@ def create_app(
             ctxflow = CtxFlow()
         state["ctxflow"] = ctxflow
 
+        # 1b. Resolve the optional model callable. Default is disabled, so no
+        # network client is created and agents keep their deterministic path.
+        owns_gateway = model_gateway is None
+        gateway = (
+            model_gateway if model_gateway is not None else create_model_gateway()
+        )
+        state["model_gateway"] = gateway
+        llm = gateway if gateway is not None else None
+        if gateway is not None:
+            logger.info(
+                "Model gateway enabled: provider=%s model=%s",
+                gateway.config.provider,
+                gateway.config.model_id,
+            )
         # 2. Initialize Skills
         lit_search = LiteratureSearchSkill()
-        paper_reader = PaperReaderSkill()
+        paper_reader = PaperReaderSkill(llm=llm)
         graph_query = GraphQuerySkill(ctxflow)
-        review_writer = ReviewWriterSkill(ctxflow)
+        review_writer = ReviewWriterSkill(ctxflow, llm=llm)
 
         state["literature_search"] = lit_search
         state["paper_reader"] = paper_reader
@@ -174,11 +199,15 @@ def create_app(
 
         # 4. Initialize Multi-Agent Pipeline
         if router_agent is None:
-            retriever = RetrieverAgent(ctxflow=ctxflow, literature_search=lit_search)
-            reader = ReaderAgent(ctxflow=ctxflow, paper_reader=paper_reader)
-            synthesizer = SynthesizerAgent(ctxflow=ctxflow)
-            critic = CriticAgent(ctxflow=ctxflow)
-            tracer = TraceAgent(ctxflow=ctxflow)
+            retriever = RetrieverAgent(
+                ctxflow=ctxflow, literature_search=lit_search, llm=llm
+            )
+            reader = ReaderAgent(
+                ctxflow=ctxflow, paper_reader=paper_reader, llm=llm
+            )
+            synthesizer = SynthesizerAgent(ctxflow=ctxflow, llm=llm)
+            critic = CriticAgent(ctxflow=ctxflow, llm=llm)
+            tracer = TraceAgent(ctxflow=ctxflow, llm=llm)
 
             router_agent = SkillRouter(
                 agents={
@@ -187,9 +216,16 @@ def create_app(
                     "synthesizer": synthesizer,
                     "critic": critic,
                     "graph_query": tracer,
-                }
+                },
+                llm=llm,
             )
         state["router"] = router_agent
+
+        # Expose the wired objects on app.state for tests and embedders.
+        app.state.ctxflow = ctxflow
+        app.state.skill_registry = skill_registry
+        app.state.router = router_agent
+        app.state.model_gateway = gateway
 
         # 5. Inject dependencies into routes
         chat_routes.set_app_state(state)
@@ -203,6 +239,8 @@ def create_app(
             lit_search.close()
         except Exception:
             pass
+        if owns_gateway and gateway is not None:
+            gateway.close()
 
     app = FastAPI(
         title="ResearchOS API",
@@ -256,6 +294,24 @@ def create_app(
                 )
                 for s in schemas
             ]
+        )
+
+    @app.get(
+        "/api/model/usage",
+        response_model=ModelUsageResponse,
+        tags=["system"],
+    )
+    async def model_usage() -> ModelUsageResponse:
+        """Cumulative model token/latency accounting for this process."""
+        gateway: Optional[ModelGateway] = state.get("model_gateway")
+        if gateway is None:
+            return ModelUsageResponse(enabled=False)
+        return ModelUsageResponse(
+            enabled=True,
+            provider=gateway.config.provider,
+            model=gateway.config.model_id,
+            usage=gateway.usage(),
+            by_model=gateway.usage_by_model(),
         )
 
     @app.get("/api/stream", tags=["stream"])

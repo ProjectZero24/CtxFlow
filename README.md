@@ -210,6 +210,7 @@ Open <http://127.0.0.1:8000>. The workspace exposes:
 | Researcher notes | `POST/GET /api/notes` |
 | Graph data / stats | `GET /api/graph/data`, `GET /api/graph/stats` |
 | Research Trace | `POST /api/trace` |
+| Model token/latency usage | `GET /api/model/usage` |
 | Skill discovery | `GET /api/skills` |
 | OpenAPI docs | `GET /docs` |
 
@@ -217,6 +218,53 @@ The UI is dependency-free (vanilla JS/SVG) and ships inside the wheel, so
 it needs no npm build. Clicking a citation or graph node opens the
 Research Trace panel: provenance chain, superseded claims, contradictions,
 and source papers.
+
+### Model consumption
+
+Model calls are **off by default**. Without `RESEARCHOS_MODEL_ENABLED=1`,
+`create_app()` builds no model client and agents keep their deterministic
+paths, so tests and the offline demo do not make network calls.
+
+Enable the gateway and pick a provider (install the model extra first:
+`pip install -e ".[researchos,llm]"`):
+
+```bash
+export RESEARCHOS_MODEL_ENABLED=1
+export RESEARCHOS_MODEL_PROVIDER=groq       # groq | ollama | nvidia | openrouter | hf
+export RESEARCHOS_MODEL_ID=openai/gpt-oss-20b
+export RESEARCHOS_MODEL_TIMEOUT_S=20
+export RESEARCHOS_MAX_RETRIES=2
+export GROQ_API_KEY=...
+researchos-api
+```
+
+`RESEARCHOS_MODEL_ID` defaults to the provider preset (`qwen3:8b` for Ollama,
+`meta/llama-3.3-70b-instruct` for NVIDIA, and so on). `RESEARCHOS_MODEL_BASE_URL`
+and `RESEARCHOS_MODEL_API_KEY` are optional escape hatches for self-hosted or
+proxied OpenAI-compatible endpoints. Only `src/researchos/gateway/model.py`
+imports a provider SDK; agents and skills receive a plain
+`(prompt, system="") -> str` callable.
+
+```python
+from researchos.gateway import create_model_gateway
+
+gateway = create_model_gateway()          # None when disabled
+if gateway is not None:
+    text = gateway.complete("Summarize this abstract...", system="Be terse.")
+    data = gateway.complete_json("Return {\"claims\": [...]}")
+```
+
+Every call records prompt/completion/total tokens and latency (estimating at
+4 characters per token when a provider omits usage). Inspect the running
+process totals at `GET /api/model/usage`; `gateway.usage()` and
+`gateway.usage_by_model()` expose the same counters in-process.
+
+Failures are not hidden: the gateway raises `ModelCallError` after its bounded
+retries, and the synthesizer reports `success=false` with an `llm_failure`
+alert instead of returning a 200 that looks successful. `RESEARCHOS_MAX_RETRIES`
+is capped at 10, and `temperature` overrides are validated against `0..2`.
+The test suite clears model variables and ignores the project `.env`, so local
+provider settings never leak into it.
 
 ### Evaluation
 
@@ -242,6 +290,7 @@ objects when available.
 
 ```bash
 pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
-       tests/test_workspace_api.py tests/test_eval_harness.py
+       tests/test_workspace_api.py tests/test_eval_harness.py \
+       tests/test_model_gateway.py
 ```
 
