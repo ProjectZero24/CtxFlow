@@ -322,3 +322,13 @@ class HealthResponse(BaseModel):
     version: str = ""
     graph_nodes: int = 0
     graph_edges: int = 0
+
+
+class ModelUsageResponse(BaseModel):
+    """Cumulative model gateway usage for this process."""
+
+    enabled: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    usage: Dict[str, Any] = Field(default_factory=dict)
+    by_model: Dict[str, Dict[str, Any]] = Field(default_factory=dict)

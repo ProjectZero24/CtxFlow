@@ -210,6 +210,7 @@ Open <http://127.0.0.1:8000>. The workspace exposes:
 | Researcher notes | `POST/GET /api/notes` |
 | Graph data / stats | `GET /api/graph/data`, `GET /api/graph/stats` |
 | Research Trace | `POST /api/trace` |
+| Model token/latency usage | `GET /api/model/usage` |
 | Skill discovery | `GET /api/skills` |
 | OpenAPI docs | `GET /docs` |
 
@@ -218,45 +219,52 @@ it needs no npm build. Clicking a citation or graph node opens the
 Research Trace panel: provenance chain, superseded claims, contradictions,
 and source papers.
 
-### Literature search outcomes
+### Model consumption
 
-Provider failures are no longer flattened into an empty result list. The
-list-returning functions remain for compatibility, and the outcome-aware API
-reports what actually happened:
+Model calls are **off by default**. Without `RESEARCHOS_MODEL_ENABLED=1`,
+`create_app()` builds no model client and agents keep their deterministic
+paths, so tests and the offline demo do not make network calls.
 
-```python
-from researchos.skills.literature_search import LiteratureSearchSkill
+Enable the gateway and pick a provider (install the model extra first:
+`pip install -e ".[researchos,llm]"`):
 
-skill = LiteratureSearchSkill()
-outcome = skill.search_with_outcome("graph neural networks", provider="both")
-
-outcome.status          # ok | empty | partial | error
-outcome.results         # deduplicated list[PaperResult]
-outcome.errors          # {"semantic_scholar": "HTTPError: 429 ..."}
-outcome.to_dict()       # per-provider status, error type, cache/latency info
+```bash
+export RESEARCHOS_MODEL_ENABLED=1
+export RESEARCHOS_MODEL_PROVIDER=groq       # groq | ollama | nvidia | openrouter | hf
+export RESEARCHOS_MODEL_ID=openai/gpt-oss-20b
+export RESEARCHOS_MODEL_TIMEOUT_S=20
+export RESEARCHOS_MAX_RETRIES=2
+export GROQ_API_KEY=...
+researchos-api
 ```
 
-`RetrieverAgent` exposes the same payload as
-`data["external_search"]` and mirrors the status in its metadata, so an
-outage is visible in the API/SSE stream instead of looking like "no papers
-found". It reports `skipped` when the graph already has enough context, and
-`unknown` for injected custom skills that only implement `search()`. Provider
-errors are never cached; successful and genuinely empty responses are.
+`RESEARCHOS_MODEL_ID` defaults to the provider preset (`qwen3:8b` for Ollama,
+`meta/llama-3.3-70b-instruct` for NVIDIA, and so on). `RESEARCHOS_MODEL_BASE_URL`
+and `RESEARCHOS_MODEL_API_KEY` are optional escape hatches for self-hosted or
+proxied OpenAI-compatible endpoints. Only `src/researchos/gateway/model.py`
+imports a provider SDK; agents and skills receive a plain
+`(prompt, system="") -> str` callable.
 
-The status is carried all the way out:
+```python
+from researchos.gateway import create_model_gateway
 
-- `POST /api/search` returns `status` (`ok` / `empty` / `partial` / `error` /
-  `unknown`), per-provider `providers` detail (error type, HTTP status, cache
-  hit, latency), and an `errors` map, alongside the usual `results` / `total`.
-- `POST /api/chat` and the `/api/stream` `done` event include the
-  `external_search` payload, so a client can distinguish "no papers" from
-  "provider down".
-- A total provider failure marks the retriever step failed
-  (`success=false`, error listing per-provider causes) and the router reports
-  `success=false` with `metadata.partial` and `metadata.failed_agents`. A
-  partial failure stays successful but is flagged `metadata.degraded`.
-- The cache opens one SQLite connection per thread, so the API's worker-thread
-  pipeline (`/api/stream`) no longer crashes the retriever.
+gateway = create_model_gateway()          # None when disabled
+if gateway is not None:
+    text = gateway.complete("Summarize this abstract...", system="Be terse.")
+    data = gateway.complete_json("Return {\"claims\": [...]}")
+```
+
+Every call records prompt/completion/total tokens and latency (estimating at
+4 characters per token when a provider omits usage). Inspect the running
+process totals at `GET /api/model/usage`; `gateway.usage()` and
+`gateway.usage_by_model()` expose the same counters in-process.
+
+Failures are not hidden: the gateway raises `ModelCallError` after its bounded
+retries, and the synthesizer reports `success=false` with an `llm_failure`
+alert instead of returning a 200 that looks successful. `RESEARCHOS_MAX_RETRIES`
+is capped at 10, and `temperature` overrides are validated against `0..2`.
+The test suite clears model variables and ignores the project `.env`, so local
+provider settings never leak into it.
 
 ### Evaluation
 
@@ -283,6 +291,6 @@ objects when available.
 ```bash
 pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
        tests/test_workspace_api.py tests/test_eval_harness.py \
-       tests/test_literature_search_outcomes.py tests/test_evidence_api.py
+       tests/test_model_gateway.py
 ```
 
