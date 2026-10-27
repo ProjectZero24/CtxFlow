@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ctxflow import CtxFlow
 from ctxflow.models import NodeStatus, QueryResult
 from researchos.agents.base import AgentResult, BaseAgent
+from researchos.guardrails import wrap_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +288,7 @@ class SynthesizerAgent(BaseAgent):
             elif r.node.status in (NodeStatus.CONTESTED, "contested"):
                 status_marker = " [CONTESTED]"
 
-            text = self._node_text(r.node)
+            text = wrap_untrusted(self._node_text(r.node), source=f"node:{r.node.id}")
             parts.append(
                 f"[Node:{r.node.id}]{status_marker} "
                 f"(type={r.node.node_type}, score={r.score:.3f}):\n{text}"

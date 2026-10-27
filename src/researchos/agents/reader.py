@@ -153,6 +153,10 @@ class ReaderAgent(BaseAgent):
         if doi:
             paper_content += f"\nDOI: {doi}"
 
+        existing = self._find_duplicate(title, arxiv_id, doi)
+        if existing is not None:
+            return [existing]
+
         paper_metadata = {
             "title": title,
             "authors": authors,
@@ -208,6 +212,21 @@ class ReaderAgent(BaseAgent):
             node_ids.append(claim_node_id)
 
         return node_ids
+
+    def _find_duplicate(self, title: str, arxiv_id: str, doi: str) -> Optional[str]:
+        title_key = " ".join(title.lower().split())
+        for node in self._ctx.graph.all_nodes():
+            if node.node_type != "paper":
+                continue
+            meta = node.metadata or {}
+            if arxiv_id and str(meta.get("arxiv_id") or "") == arxiv_id:
+                return node.id
+            if doi and str(meta.get("doi") or "") == doi:
+                return node.id
+            existing_title = " ".join(str(meta.get("title") or "").lower().split())
+            if title_key and existing_title == title_key:
+                return node.id
+        return None
 
     def _extract_abstract_claims(
         self, abstract: str
