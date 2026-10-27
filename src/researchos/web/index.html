@@ -19,13 +19,22 @@
       <span class="stat"><strong id="stat-nodes">0</strong> nodes</span>
       <span class="stat"><strong id="stat-edges">0</strong> edges</span>
       <span class="status-dot" id="health-dot"></span>
-      <span id="health-label">connecting…</span>
+      <span id="health-label" role="status" aria-live="polite">Connecting to API…</span>
     </div>
     <label class="project-picker">
       Project
-      <input id="project-id" value="default" spellcheck="false" />
+      <input id="project-id" value="default" list="recent-projects" spellcheck="false" />
+      <datalist id="recent-projects"></datalist>
     </label>
+    <button class="ghost" id="project-open" type="button">Open label</button>
   </header>
+  <p class="workspace-notice" id="project-scope-notice">
+    Project ID scopes notes and the displayed paper list only; graph and chat
+    are shared in-memory. Only project labels are remembered in this browser;
+    research data is not persisted across server restarts. Questions run
+    immediately; plan review and confirmation are not implemented.
+  </p>
+  <p class="project-status" id="project-status" role="status" aria-live="polite"></p>
 
   <main class="workspace">
     <section class="panel library" aria-label="Project library">
@@ -69,14 +78,14 @@
 
       <div class="notes-wrap">
         <h3>Papers</h3>
-        <ul id="papers-list" class="notes-list">
+        <ul id="papers-list" class="notes-list" aria-live="polite">
           <li class="empty">No papers ingested yet.</li>
         </ul>
       </div>
 
       <div class="notes-wrap">
         <h3>Notes</h3>
-        <ul id="notes-list" class="notes-list">
+        <ul id="notes-list" class="notes-list" aria-live="polite">
           <li class="empty">No notes yet.</li>
         </ul>
       </div>
@@ -95,6 +104,11 @@
             <em>“Trace the provenance of this claim.”</em>
           </div>
         </article>
+      </div>
+      <p class="chat-status" id="chat-status" role="status" aria-live="polite"></p>
+      <div class="stream-progress" id="stream-progress" hidden>
+        <strong>Run progress</strong>
+        <ol id="stream-steps" role="log" aria-live="polite" aria-relevant="additions"></ol>
       </div>
       <form id="chat-form" class="composer">
         <textarea id="chat-input" rows="2" placeholder="Ask a research question…" required></textarea>

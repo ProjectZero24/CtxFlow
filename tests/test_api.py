@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -101,3 +103,35 @@ class TestApiEndpoints:
         t_data = trace_res.json()
         assert t_data["answer_node_id"] == claim_id
         assert len(t_data["source_papers"]) >= 1
+
+    def test_stream_emits_documented_progress_events(self, test_client):
+        response = test_client.get(
+            "/api/stream",
+            params={"query": "Trace provenance of this claim"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+
+        events = []
+        for frame in response.text.replace("\r\n", "\n").split("\n\n"):
+            lines = frame.splitlines()
+            event = next((line[7:] for line in lines if line.startswith("event: ")), None)
+            data = next((line[6:] for line in lines if line.startswith("data: ")), None)
+            if event and data:
+                events.append((event, json.loads(data)))
+
+        names = [event for event, _ in events]
+        assert names[0] == "start"
+        assert names[-1] == "done"
+        assert names.count("agent_completed") >= 1
+        start = events[0][1]
+        assert isinstance(start["query"], str)
+        assert isinstance(start["message"], str)
+        for event_name, payload in events[1:-1]:
+            assert event_name == "agent_completed"
+            assert isinstance(payload["agent"], str)
+            assert isinstance(payload["success"], bool)
+            assert isinstance(payload["duration_ms"], (int, float))
+        done = events[-1][1]
+        assert isinstance(done["success"], bool)
+        assert isinstance(done["data"], dict)

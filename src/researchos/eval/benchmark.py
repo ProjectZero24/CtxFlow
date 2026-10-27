@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, Set
 
 from ctxflow import CtxFlow
 from ctxflow.models import CtxFlowConfig, Edge, NodeStatus
+from researchos.agents.synthesizer import synthesis_prompt_accounting
 from researchos.eval.baselines import (
     FlatVectorStore,
     MultiAgentFlatRAG,
@@ -90,7 +91,14 @@ class BenchmarkRunner:
                         "final_context_k": self.k,
                     },
                 },
-                "token_estimate": "ceil(characters / 4)",
+                "token_estimate": (
+                    "SimpleTokenizer simple-v1: regex word and punctuation tokens; "
+                    "deterministic estimate, not a provider tokenizer."
+                ),
+                "runtime_synthesis_prompt": {
+                    **synthesis_prompt_accounting(),
+                    "used_by_benchmark": False,
+                },
                 "supersession_ground_truth": (
                     "Explicitly injected from the synthetic dataset; "
                     "does not evaluate automatic contradiction detection."

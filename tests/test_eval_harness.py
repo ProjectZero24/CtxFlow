@@ -19,7 +19,8 @@ class TestMetrics:
     def test_estimate_tokens(self):
         assert estimate_tokens("") == 0
         assert estimate_tokens("abcd") == 1
-        assert estimate_tokens("a" * 9) == 3
+        assert estimate_tokens("a" * 9) == 1
+        assert estimate_tokens("a b!") == 3
 
     def test_record_supersession_and_provenance(self):
         suite = get_default_contradiction_benchmark()
@@ -119,6 +120,11 @@ class TestBenchmarkRunner:
         assert decoded["configuration"]["provider"].startswith("none")
         assert decoded["configuration"]["model"] == "none"
         assert decoded["configuration"]["shared_controls"]["retrieval_k"] == 5
+        prompt = decoded["configuration"]["runtime_synthesis_prompt"]
+        assert len(prompt["system_prompt_sha256"]) == 64
+        assert prompt["system_prompt_token_count"] > 0
+        assert prompt["tokenizer"] == "simple-v1"
+        assert prompt["used_by_benchmark"] is False
         assert len(decoded["systems"]) == 3
         assert "answer_accuracy" in decoded["systems"]["ctxflow_graph"]
 

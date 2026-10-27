@@ -79,7 +79,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Flat baselines use a deterministic hashed lexical embedder, not semantic embeddings.",
             "CtxFlow graph evaluation queries the graph directly and does not run agents.",
             "Supersession links are manually injected from benchmark annotations; automatic detection is not evaluated.",
-            "Context tokens are estimated as four characters per token.",
+            "Context tokens use the deterministic simple-v1 word/punctuation tokenizer, not a provider tokenizer.",
+            "The benchmark does not invoke the ResearchOS synthesis prompt; its fingerprint is reported as a reference only.",
             "The multi-agent-shaped flat baseline over-fetches 2k candidates while retaining at most k context items.",
         ],
     }

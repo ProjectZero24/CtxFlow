@@ -8,10 +8,12 @@ the LLM prompt, mitigating the "lost-in-the-middle" phenomenon.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from ctxflow import CtxFlow
+from ctxflow.memory.tokens import SimpleTokenizer
 from ctxflow.models import NodeStatus, QueryResult
 from researchos.agents.base import AgentResult, BaseAgent
 
@@ -34,6 +36,9 @@ _SYNTHESIS_SYSTEM = (
     "5. Structure your answer with clear sections when appropriate.\n"
     "Respond with ONLY the answer text."
 )
+SYNTHESIS_SYSTEM_PROMPT_SHA256 = hashlib.sha256(
+    _SYNTHESIS_SYSTEM.encode("utf-8")
+).hexdigest()
 
 _NO_LLM_HEADER = "Based on the available knowledge graph context:\n\n"
 
@@ -41,6 +46,20 @@ _LLM_FAILED_HEADER = (
     "The synthesis model was unavailable, so this answer is the retrieved "
     "evidence without model synthesis:\n\n"
 )
+
+
+def synthesis_prompt_accounting(query: str = "", context: str = "") -> Dict[str, Any]:
+    """Return reproducible prompt fingerprint and estimated tokenizer counts."""
+    tokenizer = SimpleTokenizer()
+    user_prompt = f"Question: {query}\n\nContext:\n{context}"
+    return {
+        "system_prompt_sha256": SYNTHESIS_SYSTEM_PROMPT_SHA256,
+        "system_prompt_token_count": tokenizer.count(_SYNTHESIS_SYSTEM),
+        "estimated_total_prompt_tokens": tokenizer.count(
+            f"{_SYNTHESIS_SYSTEM}\n\n{user_prompt}"
+        ),
+        "tokenizer": tokenizer.tokenizer_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +169,7 @@ class SynthesizerAgent(BaseAgent):
                 }
             ]
         cited_ids = [r.node.id for r in packed]
+        prompt_metadata = synthesis_prompt_accounting(query, prompt_context)
 
         return AgentResult(
             agent_name=self.name,
@@ -169,6 +189,7 @@ class SynthesizerAgent(BaseAgent):
                 "token_budget": self.token_budget,
                 "degraded": llm_error is not None,
                 "llm_error": llm_error,
+                **prompt_metadata,
             },
         )
 
