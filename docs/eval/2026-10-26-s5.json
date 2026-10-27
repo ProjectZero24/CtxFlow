@@ -1,0 +1,146 @@
+{
+  "suite": "Scientific Contradiction & Supersession Suite v1",
+  "questions": 10,
+  "papers": 5,
+  "k": 5,
+  "configuration": {
+    "provider": "none (deterministic local evaluation)",
+    "model": "none",
+    "prompts": "none",
+    "shared_controls": {
+      "suite": "Scientific Contradiction & Supersession Suite v1",
+      "retrieval_k": 5,
+      "llm_calls": 0
+    },
+    "systems": {
+      "ctxflow_graph": {
+        "method": "direct CtxFlow graph query; no agent pipeline",
+        "contradiction_detection": false
+      },
+      "flat_rag": {
+        "method": "single-agent-shaped flat retrieval",
+        "embedder": "256-dimensional deterministic HashingEmbedder"
+      },
+      "flat_rag_multi_agent": {
+        "method": "deterministic retriever/reader/synthesizer/critic-shaped flat retrieval",
+        "embedder": "256-dimensional deterministic HashingEmbedder",
+        "retriever_candidates": 10,
+        "final_context_k": 5
+      }
+    },
+    "token_estimate": "SimpleTokenizer simple-v1: regex word and punctuation tokens; deterministic estimate, not a provider tokenizer.",
+    "runtime_synthesis_prompt": {
+      "system_prompt_sha256": "65d523af61e2011b2cf253911183418d0ad8c3abdb7d351344befc041cb05878",
+      "system_prompt_token_count": 106,
+      "estimated_total_prompt_tokens": 110,
+      "tokenizer": "simple-v1",
+      "used_by_benchmark": false
+    },
+    "supersession_ground_truth": "Explicitly injected from the synthetic dataset; does not evaluate automatic contradiction detection."
+  },
+  "question_rationales": [
+    {
+      "id": "q1",
+      "rationale": "Tests whether the correction supersedes a widely reported but leakage-affected score."
+    },
+    {
+      "id": "q2",
+      "rationale": "Tests selection of the strongest result whose validation is explicitly leakage-isolated."
+    },
+    {
+      "id": "q3",
+      "rationale": "Covers an efficiency claim unrelated to the superseded accuracy result."
+    },
+    {
+      "id": "q4",
+      "rationale": "Checks that an explanation of the evaluation flaw retrieves the correction rather than the invalid score."
+    },
+    {
+      "id": "q5",
+      "rationale": "Checks exact performance and validation context for the leakage-resistant method."
+    },
+    {
+      "id": "q6",
+      "rationale": "Adds a second independent supersession case to avoid relying on one correction scenario."
+    },
+    {
+      "id": "q7",
+      "rationale": "Tests retrieval of the concrete cause behind the independent Algorithm W correction."
+    },
+    {
+      "id": "q8",
+      "rationale": "Checks provenance attribution for a correction, not just retrieval of its numeric value."
+    },
+    {
+      "id": "q9",
+      "rationale": "Requires both independent corrections while suppressing both superseded scores."
+    },
+    {
+      "id": "q10",
+      "rationale": "Checks source attribution for a non-accuracy claim to broaden coverage beyond supersession."
+    }
+  ],
+  "systems": {
+    "ctxflow_graph": {
+      "system_name": "CtxFlow graph (direct query)",
+      "total_questions": 10,
+      "questions_correct": 8,
+      "answer_accuracy": 0.8,
+      "correct_active_claims_retrieved": 9,
+      "superseded_claims_suppressed": 7,
+      "superseded_claims_incorrectly_returned": 0,
+      "supersession_defense_rate": 1.0,
+      "precision_against_supersession": 1.0,
+      "provenance_traces_found": 10,
+      "provenance_correct": 8,
+      "provenance_accuracy": 0.8,
+      "avg_context_tokens": 103.5
+    },
+    "flat_rag": {
+      "system_name": "Flat vector RAG (single agent)",
+      "total_questions": 10,
+      "questions_correct": 5,
+      "answer_accuracy": 0.5,
+      "correct_active_claims_retrieved": 7,
+      "superseded_claims_suppressed": 3,
+      "superseded_claims_incorrectly_returned": 4,
+      "supersession_defense_rate": 0.4286,
+      "precision_against_supersession": 0.6364,
+      "provenance_traces_found": 0,
+      "provenance_correct": 0,
+      "provenance_accuracy": 0.0,
+      "avg_context_tokens": 107.0
+    },
+    "flat_rag_multi_agent": {
+      "system_name": "Flat vector RAG (4-stage pipeline-shaped baseline)",
+      "total_questions": 10,
+      "questions_correct": 5,
+      "answer_accuracy": 0.5,
+      "correct_active_claims_retrieved": 7,
+      "superseded_claims_suppressed": 3,
+      "superseded_claims_incorrectly_returned": 4,
+      "supersession_defense_rate": 0.4286,
+      "precision_against_supersession": 0.6364,
+      "provenance_traces_found": 0,
+      "provenance_correct": 0,
+      "provenance_accuracy": 0.0,
+      "avg_context_tokens": 107.0
+    }
+  },
+  "run": {
+    "date_utc": "2026-10-26",
+    "command": "C:\\Users\\hp\\Documents\\GitHub\\CtxFlow\\.venv\\Scripts\\python.exe -m researchos.eval --json --out docs\\eval\\2026-10-26-s5.json",
+    "source_commit": "0772188c61cdaf1f11ab85461a170be1073f8c87",
+    "working_tree_dirty": true,
+    "limitations": [
+      "Synthetic benchmark with five papers and ten questions; results are not statistically significant.",
+      "Answer and provenance metrics use normalized substring matching.",
+      "Flat baselines use a deterministic hashed lexical embedder, not semantic embeddings.",
+      "CtxFlow graph evaluation queries the graph directly and does not run agents.",
+      "Supersession links are manually injected from benchmark annotations; automatic detection is not evaluated.",
+      "Context tokens use the deterministic simple-v1 word/punctuation tokenizer, not a provider tokenizer.",
+      "The benchmark does not invoke the ResearchOS synthesis prompt; its fingerprint is reported as a reference only.",
+      "The multi-agent-shaped flat baseline over-fetches 2k candidates while retaining at most k context items."
+    ]
+  }
+}

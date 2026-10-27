@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Sequence
 
 from researchos.eval.benchmark import BenchmarkRunner
@@ -18,6 +21,7 @@ from researchos.eval.dataset import get_default_contradiction_benchmark
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    command_args = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(
         prog="researchos-eval",
         description=(
@@ -41,15 +45,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=5,
         help="Number of retrieved items per query (default: 5).",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(command_args)
 
     suite = get_default_contradiction_benchmark()
     runner = BenchmarkRunner(suite, k=args.k)
     metrics = runner.run_benchmark()
-    report = runner.run_report()
+    report = runner.run_report(metrics)
+    repository_root = Path(__file__).resolve().parents[3]
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    working_tree_dirty = bool(subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip())
+    report["run"] = {
+        "date_utc": datetime.now(timezone.utc).date().isoformat(),
+        "command": " ".join(
+            [sys.executable, "-m", "researchos.eval", *command_args]
+        ),
+        "source_commit": source_commit,
+        "working_tree_dirty": working_tree_dirty,
+        "limitations": [
+            "Synthetic benchmark with five papers and ten questions; results are not statistically significant.",
+            "Answer and provenance metrics use normalized substring matching.",
+            "Flat baselines use a deterministic hashed lexical embedder, not semantic embeddings.",
+            "CtxFlow graph evaluation queries the graph directly and does not run agents.",
+            "Supersession links are manually injected from benchmark annotations; automatic detection is not evaluated.",
+            "Context tokens use the deterministic simple-v1 word/punctuation tokenizer, not a provider tokenizer.",
+            "The benchmark does not invoke the ResearchOS synthesis prompt; its fingerprint is reported as a reference only.",
+            "The multi-agent-shaped flat baseline over-fetches 2k candidates while retaining at most k context items.",
+        ],
+    }
 
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as handle:
+        output_path = Path(args.out)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as handle:
             json.dump(report, handle, indent=2)
             handle.write("\n")
 

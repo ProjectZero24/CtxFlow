@@ -14,19 +14,17 @@ proposal:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
-# Prompt-token approximation used throughout the codebase (4 chars/token).
-CHARS_PER_TOKEN = 4
+from ctxflow.memory.tokens import SimpleTokenizer
 
 
 def estimate_tokens(text: str) -> int:
-    """Approximate the number of prompt tokens in *text*."""
+    """Count whitespace-delimited words and punctuation with ``simple-v1``."""
     if not text:
         return 0
-    return max(1, math.ceil(len(text) / CHARS_PER_TOKEN))
+    return SimpleTokenizer().count(text)
 
 
 def _normalize(text: str) -> str:
@@ -181,6 +179,7 @@ class EvaluationMetrics:
         )
         if (
             question_correct
+            and trace_found
             and ground_truth
             and cited_sources
             and ground_truth & set(cited_sources)

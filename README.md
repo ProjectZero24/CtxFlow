@@ -190,15 +190,48 @@ agents (Retriever → Reader → Synthesizer → Critic), four schema-registered
 skills, a FastAPI backend, a bundled Research Trace UI, and an evaluation
 harness with two flat-RAG baselines.
 
-### Install and run
+### Run the workspace from a fresh checkout
 
 ```bash
-pip install -e ".[researchos]"
-researchos-api
-# or: python -m researchos.api.main
+python -m venv .venv
 ```
 
-Open <http://127.0.0.1:8000>. The workspace exposes:
+Install the ResearchOS and test dependencies, then start the API. On Windows
+PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[researchos,dev]"
+.\.venv\Scripts\python.exe -m researchos.api.main
+```
+
+On macOS/Linux:
+
+```bash
+.venv/bin/python -m pip install -e ".[researchos,dev]"
+.venv/bin/python -m researchos.api.main
+```
+
+Alternatively, after installation, run `researchos-api`. Open
+<http://127.0.0.1:8000>; `/health` should return an `ok` status. The
+`researchos` extra includes the optional PDF parser (`pymupdf`); the metadata
+and abstract workflow does not require a PDF upload.
+
+### Workspace demo
+
+1. Open the workspace and check that the API status is online.
+2. Add a paper using its title and abstract (or upload a PDF).
+3. Ask a question about ingested evidence; the workspace reports stream steps
+   and distinguishes answers, empty results, and failures.
+4. Open an answer citation or graph node to inspect its Research Trace.
+5. Export a Markdown report from an answer when available.
+
+The workspace is dependency-free (vanilla JS/SVG) and ships inside the wheel;
+it needs no npm build. Clicking a citation or graph node opens the Research
+Trace panel: provenance chain, superseded claims, contradictions, and source
+papers. API errors and unavailable/empty states are presented explicitly.
+
+The API contract can be inspected at <http://127.0.0.1:8000/docs>. Main UI
+endpoints:
 
 | Area | Endpoint |
 |---|---|
@@ -214,10 +247,18 @@ Open <http://127.0.0.1:8000>. The workspace exposes:
 | Skill discovery | `GET /api/skills` |
 | OpenAPI docs | `GET /docs` |
 
-The UI is dependency-free (vanilla JS/SVG) and ships inside the wheel, so
-it needs no npm build. Clicking a citation or graph node opens the
-Research Trace panel: provenance chain, superseded claims, contradictions,
-and source papers.
+### Current limitations
+
+Project labels are not isolated projects: they scope the displayed paper list
+and notes only. Graph and chat data are shared in memory and disappear when the
+server restarts. Questions run immediately; plan review/confirmation,
+cancellation, resume, and durable run history are not implemented. The stream
+reports agent completion events but has no run ID or formal partial-result
+contract; disconnecting does not guarantee that server work stops. Request
+`session_id` and `token_budget` fields do not currently provide session
+isolation or control the runtime token budget. The workspace displays available
+source metadata, but a missing access/page/section field means that full-text
+access or location is unverified.
 
 ### Model consumption
 
@@ -270,21 +311,28 @@ provider settings never leak into it.
 
 ```bash
 researchos-eval
-# or: python -m researchos.eval --json --out benchmark-report.json
+# reproducible JSON report:
+python -m researchos.eval --json --out docs/eval/2026-10-26-s5.json
 ```
 
-The harness compares:
+The committed [S5 report](docs/eval/2026-10-26-s5.json) records all three
+systems on a deterministic synthetic suite of 5 papers and 10 questions
+(`k=5`): direct CtxFlow graph queries, single-agent-shaped flat retrieval, and
+a four-stage-pipeline-shaped flat baseline. The graph evaluator does **not**
+run the ResearchOS agents. At the recorded run, answer accuracy was 0.80 for
+the graph and 0.50 for each flat baseline; provenance accuracy was 0.80 and
+0.00 respectively. These small-suite results are descriptive, not
+statistically significant.
 
-1. **CtxFlow graph + four agents** (`ctxflow_graph`)
-2. **Baseline A** — flat vector retrieval, single agent (`flat_rag`)
-3. **Baseline B** — flat vector retrieval, four-agent pipeline
-   (`flat_rag_multi_agent`)
-
-Metrics: answer accuracy, supersession-defence rate, provenance accuracy,
-and estimated prompt tokens per query. The flat baselines use a deterministic
-hashed bag-of-words embedder so the benchmark runs offline; swap in a real
-embedding model via `researchos.eval.baselines.HashingEmbedder`-compatible
-objects when available.
+Important limitations: answer/provenance scoring uses normalized substring
+matching; flat retrieval uses a deterministic hashed lexical embedder, not
+semantic embeddings; supersession links are injected from dataset annotations;
+and the benchmark does not test automatic contradiction detection. Context
+token counts use deterministic `SimpleTokenizer` (`simple-v1`), not provider
+tokenization or billed usage. The production synthesis-prompt hash in the
+report is reference metadata only (`used_by_benchmark: false`); the benchmark
+does not call a provider or use that prompt. The multi-agent-shaped baseline
+over-fetches `2k` candidates and keeps at most `k` context items.
 
 ### ResearchOS tests
 
@@ -294,3 +342,7 @@ pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
        tests/test_model_gateway.py
 ```
 
+For the full suite, run `python -m pytest -q`.
+
+For a focused workspace/API run, use
+`python -m pytest -q tests/test_workspace_api.py tests/test_api.py`.
