@@ -37,6 +37,11 @@ _SYNTHESIS_SYSTEM = (
 
 _NO_LLM_HEADER = "Based on the available knowledge graph context:\n\n"
 
+_LLM_FAILED_HEADER = (
+    "The synthesis model was unavailable, so this answer is the retrieved "
+    "evidence without model synthesis:\n\n"
+)
+
 
 # ---------------------------------------------------------------------------
 # SynthesizerAgent
@@ -119,18 +124,41 @@ class SynthesizerAgent(BaseAgent):
         prompt_context = self._build_prompt_context(packed)
 
         # 5. Generate response
+        llm_error: Optional[str] = None
         if self._llm:
-            answer = self._synthesize_with_llm(query, prompt_context)
+            try:
+                answer = self._synthesize_with_llm(query, prompt_context)
+            except Exception as exc:  # noqa: BLE001 - surfaced in the result
+                llm_error = (
+                    str(exc).strip() or type(exc).__name__
+                )
+                logger.warning("LLM synthesis failed: %s", llm_error)
+                answer = f"{_LLM_FAILED_HEADER}{prompt_context}"
         else:
             answer = self._synthesize_heuristic(query, packed)
 
         # 6. Collect alerts
         alerts = self._collect_alerts(packed)
+        if llm_error is not None:
+            alerts = alerts + [
+                {
+                    "type": "llm_failure",
+                    "message": (
+                        "Model synthesis failed; the answer is a degraded "
+                        f"evidence dump ({llm_error})."
+                    ),
+                }
+            ]
         cited_ids = [r.node.id for r in packed]
 
         return AgentResult(
             agent_name=self.name,
-            success=True,
+            success=llm_error is None,
+            error=(
+                f"Model synthesis failed: {llm_error}"
+                if llm_error is not None
+                else None
+            ),
             data={
                 "answer": answer,
                 "cited_nodes": cited_ids,
@@ -139,6 +167,8 @@ class SynthesizerAgent(BaseAgent):
             metadata={
                 "nodes_used": len(packed),
                 "token_budget": self.token_budget,
+                "degraded": llm_error is not None,
+                "llm_error": llm_error,
             },
         )
 
@@ -223,15 +253,15 @@ class SynthesizerAgent(BaseAgent):
         return "\n\n---\n\n".join(parts)
 
     def _synthesize_with_llm(self, query: str, context: str) -> str:
-        """Generate answer using the LLM."""
+        """Generate answer using the LLM.
+
+        Failures propagate: the caller decides how to degrade and must not
+        report a successful synthesis when the model never answered.
+        """
         assert self._llm is not None
 
         prompt = f"Question: {query}\n\nContext:\n{context}"
-        try:
-            return self._llm(prompt, system=_SYNTHESIS_SYSTEM).strip()
-        except Exception:
-            logger.warning("LLM synthesis failed", exc_info=True)
-            return f"[LLM synthesis failed] {_NO_LLM_HEADER}{context}"
+        return self._llm(prompt, system=_SYNTHESIS_SYSTEM).strip()
 
     def _synthesize_heuristic(
         self, query: str, results: List[QueryResult]
