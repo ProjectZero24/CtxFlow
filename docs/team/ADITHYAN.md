@@ -41,7 +41,7 @@ query
 
 What is broken or missing:
 
-- `search_arxiv` / `search_semantic_scholar` use blocking `urllib` (30 s timeout) and **return `[]` on any error**. A provider outage is indistinguishable from "no papers found".
+- `search_arxiv` / `search_semantic_scholar` use blocking `urllib` (30 s timeout) and **return `[]` on any error**. A provider outage is indistinguishable from "no papers found". *(Fixed 26 Oct 2026: outcome-aware variants now report `ok` / `empty` / `error`; see §5.)*
 - Deduplication uses **lowercased title only**. DOI and arXiv ID are captured but unused; `_parse_arxiv_xml` never sets DOI; Semantic Scholar may return an empty URL.
 - **No PDF downloader exists.** `ReaderAgent` only parses a PDF when `paper["pdf_path"]` is already present; otherwise it derives "evidence" from the abstract.
 - `ReaderAgent` stores `source_paper` as the paper **title** and drops `section` / `page`; only `/api/papers/upload` preserves page metadata.
@@ -88,7 +88,9 @@ It defines:
 
 ### Assignment reconciliation
 
-The skills split (commit `6ae8b0f`) assigns you evidence/retrieval. The older layer doc gives you Layer 4 (serving/caching). Your **primary delivery is evidence**; the caching, timeout, allowlist, and HTTP-discipline parts of L4 are naturally yours because they live in the retrieval client. Server routing, run lifecycle, and UI are not yours. If the team confirms the old L1–L4 split instead, your file list expands to `skills/registry.py`, `gateway/`, `api/`; until that decision is recorded, do not edit those areas.
+The skills split (commit `6ae8b0f`) assigns you evidence/retrieval. The older layer doc gives you Layer 4 (serving/caching). Your **primary delivery is evidence**; the caching, timeout, allowlist, and HTTP-discipline parts of L4 are naturally yours because they live in the retrieval client. Server routing, run lifecycle, and UI are not yours.
+
+**Decision (26 Oct 2026):** the MVP plan (§7.4, §12) is the active split for L4: `src/researchos/gateway/` and the `ModelGateway.complete(...)` contract are yours to publish. Evidence stays your primary deliverable; the gateway is shared infrastructure. The sections below record exactly what you publish and what agents/skills may consume. Do not expand into `api/` beyond the gateway wiring agreed in the PR.
 
 ---
 
@@ -143,6 +145,25 @@ The skills split (commit `6ae8b0f`) assigns you evidence/retrieval. The older la
 - `source_paper` (a title) is **not** sufficient provenance. Add the paper node ID.
 - Respect robots/terms/access controls. Do not bypass paywalls.
 - Every external call has a timeout, a bounded retry, and a fallback.
+
+### Implementation status
+
+| Gap | Status |
+|---|---|
+| Explicit provider outcomes (`ok` / `empty` / `partial` / `error`), failure metadata, and failure-aware cache | **Implemented** 26 Oct 2026 on `feat/adithyan-evidence`; `tests/test_literature_search_outcomes.py` |
+| Outcome reaches consumers: `/api/search` status + per-provider errors, `/api/chat` & SSE `external_search`, failed/degraded pipeline status | **Implemented** 27 Oct 2026; `tests/test_evidence_api.py` |
+| Cross-thread cache safety (the API runs the pipeline in a worker thread) | **Implemented** 27 Oct 2026; per-thread SQLite connections |
+| Metadata normalization + dedupe by DOI → arXiv ID → cautious title | Next |
+| PDF downloader with allowlist, size/time caps, `access_status` | Not started |
+| Page/section provenance through extraction and persistence | Not started |
+| Citation validator for `[Node:ID]` and quoted excerpts | Not started |
+| Politeness: rate limiting, backoff, `both` result cap | Not started |
+
+The list-returning `search_arxiv`, `search_semantic_scholar`, and
+`LiteratureSearchSkill.search` remain for existing callers. New callers should
+use `search_arxiv_outcome`, `search_semantic_scholar_outcome`, or
+`LiteratureSearchSkill.search_with_outcome` when they need to distinguish an
+empty result set from a provider failure.
 
 ---
 
@@ -239,12 +260,110 @@ Hard prohibitions.
 | Christo | `CtxFlow.ingest`, node IDs, `research_trace`, provenance edge vocabulary |
 | Abinav | API schema fields; UI expectations for source/access display |
 | Runtime | model callable shape `(prompt, system) -> str`; no provider SDK imports outside the gateway |
+| Your gateway | `ModelGateway.complete(...)`, `usage()`, `complete_json(...)`; see §8a |
 
 ### Preserved invariants
 
 - Claim nodes remain `relation_type="extracted_from"` from the paper node.
 - `source_paper`, `source_doi`, `section`, `page`, `confidence` keys keep their existing meaning; add, don't repurpose.
 - `PaperReaderSkill.extract_claims` still returns `list[ExtractedClaim]` unless all consumers change together.
+
+---
+
+## 8a. Model consumption (gateway)
+
+Source: `src/researchos/gateway/model.py` (contract), `src/researchos/api/server.py` (wiring).
+
+**Status (26 Oct 2026):** implemented on `feat/adithyan-model-gateway`, based
+on `Adi/feat/v1@08d0a6a`. `python -m pytest -q` → **189 passed, 6 skipped**
+(27 Oct: failure propagation, validation bounds, and test-env isolation added).
+
+### What you publish
+
+| Contract | Shape |
+|---|---|
+| `ModelGateway.complete(prompt, *, system="")` | `str` completion; bounded retries; token accounting |
+| `ModelGateway.__call__(prompt, system="")` | Same callable shape agents already accept |
+| `ModelGateway.complete_json(prompt, *, schema=None)` | Parsed JSON; one repair attempt |
+| `ModelGateway.usage()` / `usage_by_model()` / `reset_usage()` | Cumulative counters for eval/cost reporting |
+| `create_model_gateway()` / `load_model_config()` / `model_enabled()` | Env-driven construction |
+| `GET /api/model/usage` | Process-level usage for the running API |
+
+Only `gateway/model.py` imports a provider SDK, and it imports `openai`
+lazily. Agents and skills receive the callable, never a client:
+
+```python
+gateway = create_model_gateway()          # None unless enabled
+if gateway is not None:
+    answer = gateway.complete(prompt, system="You are a careful reader.")
+```
+
+### Configuration
+
+| Env var | Values | Default |
+|---|---|---|
+| `RESEARCHOS_MODEL_ENABLED` | `0/1`, `true/false` | **off** |
+| `RESEARCHOS_MODEL_PROVIDER` | `groq` \| `ollama` \| `nvidia` \| `openrouter` \| `hf` | `groq` |
+| `RESEARCHOS_MODEL_ID` | provider model id | per preset |
+| `RESEARCHOS_MODEL_TIMEOUT_S` | seconds | `20` |
+| `RESEARCHOS_MAX_RETRIES` | retries **after** the first attempt (0–10) | `2` |
+| `RESEARCHOS_MODEL_BASE_URL` | optional endpoint override | preset URL |
+| `RESEARCHOS_MODEL_API_KEY` | optional generic key | provider env var |
+
+Provider keys: `GROQ_API_KEY`, `NVIDIA_API_KEY`, `OPENROUTER_API_KEY`,
+`HF_TOKEN`; Ollama needs no key. Preset defaults are
+`openai/gpt-oss-20b` (Groq/OpenRouter), `qwen3:8b` (Ollama),
+`meta/llama-3.3-70b-instruct` (NVIDIA), and `Qwen/Qwen3-8B` (HF).
+
+The flag defaults **off**. With it off, `create_app()` makes no network
+client and agents keep the existing deterministic path; this is what keeps
+the test suite and offline demo stable. When the flag is on but the config
+is invalid (unknown provider, missing key, bad timeout/retry count), startup
+raises `ModelConfigError` instead of silently degrading.
+
+### Behaviour and failure semantics
+
+- Defaults are `temperature=0`, `max_tokens=512`, one model call per node
+  (System-1 discipline). `temperature` and `max_tokens` are per-call
+  overrides, validated to `0..2` and `>0`; the default is not re-enforced.
+- Retries are bounded: `MAX_RETRIES=2` means at most three attempts, and the
+  configured value is capped at `10` so a typo cannot produce a retry storm.
+  Only transient failures retry (HTTP 408/409/425/429, 5xx, timeout,
+  connection, rate-limit, empty completion). Other 4xx errors fail
+  immediately.
+- Exhausted calls raise `ModelCallError` with `attempts` and `last_error`;
+  malformed JSON after one repair raises `ModelResponseError`. The gateway
+  never returns a placeholder answer and never falls back to a different
+  model. Callers must handle the exception: `SynthesizerAgent` marks the step
+  `success=False` and adds an `llm_failure` alert with a degraded
+  evidence-only answer, so `/api/chat` and SSE show the failure instead of a
+  silent HTTP 200.
+- `complete_json` uses provider JSON mode when the preset supports it,
+  tolerates markdown fences/prose, and performs exactly one repair call. It is
+  part of the published gateway contract; the current agent path
+  (`LLMExtractor`) uses the plain `(prompt, system) -> str` callable, so JSON
+  mode is opt-in for future extractors.
+
+### Cost and latency
+
+Every successful call records `prompt_tokens`, `completion_tokens`,
+`total_tokens`, and latency in `usage()`, split by model in `usage_by_model()`.
+If a provider omits usage, the gateway estimates at 4 characters per token
+and increments `estimated_calls` so reports can flag approximations. Failed
+calls increment `failures`; retry sleeps increment `retries`. Pricing is not
+hardcoded in the gateway (provider prices change); the eval report converts
+the recorded token totals with current rates.
+
+### Boundaries
+
+- Evidence work stays yours; do not add provider logic to `literature_search.py` beyond what its own retry/politeness contract needs.
+- Do not import `openai` (or another provider SDK) from an agent, skill, route, script, or test. Use the injected callable or `create_model_gateway()`.
+- Do not put routing, guardrail policy, or prompt design in `gateway/model.py`; it is transport + accounting only.
+- Tests must inject a fake client or gateway; never call a live provider in CI.
+- `tests/conftest.py` clears `RESEARCHOS_MODEL_*` and provider keys and ignores
+  the project `.env` for every test, so a developer's local provider settings
+  cannot change test behaviour or add network latency. Tests that need a
+  gateway pass one explicitly.
 
 ---
 
@@ -280,7 +399,9 @@ Hard prohibitions.
 ```bash
 python -m pytest -q
 python -m pytest -q tests/test_skills.py tests/test_agents.py
+python -m pytest -q tests/test_literature_search_outcomes.py
 python -m pytest -q tests/test_api.py tests/test_workspace_api.py
+python -m pytest -q tests/test_model_gateway.py
 python -m researchos.eval
 researchos-api
 ```
@@ -303,6 +424,12 @@ researchos-api
 | `CriticAgent` only parses node status | Citations can be dead | Provide resolver; Harikesh owns verdict |
 | `ReviewWriterSkill` emits `[Node:ID]` | Not DOI citations | Do not overclaim; validate IDs |
 | `tests/llm.py` executed network code at import | Removed in PR #3 | Do not reintroduce network code at import time |
+
+**Fixed 26 Oct 2026:** `search_arxiv`, `search_semantic_scholar`, and
+`LiteratureSearchSkill` still return lists for compatibility, but the
+`*_outcome` variants and `search_with_outcome()` now report provider status,
+error type, status code, cache origin, and latency. Malformed provider
+payloads are errors, and failed calls are not cached.
 
 ---
 
@@ -346,5 +473,6 @@ Report exact commands, results, and limitations.
 - **Own:** literature search, PDF reading, downloader, evidence provenance, citation resolver.
 - **Ship:** honest provider states, dedupe, access status, page spans, resolvable citations.
 - **Never:** silent `[]`, title-only dedupe, invented pages/quotes, abstract-as-full-text, new schema, paywall bypass, blocking I/O.
+- **Model gateway:** publish `ModelGateway.complete(...)`; agents consume `(prompt, system) -> str`; off unless `RESEARCHOS_MODEL_ENABLED=1`; usage at `GET /api/model/usage` (§8a).
 - **Skills:** `researchos-evidence-retrieval` (primary); read orchestration/memory for contracts only.
 - **Done means:** tests green, failures visible, every demo claim resolves to a real source.

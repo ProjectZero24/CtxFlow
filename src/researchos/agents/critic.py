@@ -127,11 +127,28 @@ class CriticAgent(BaseAgent):
                 contradiction_warnings.extend(validation.get("contradictions", []))
 
         # Build verdict
+        has_evidence = bool(cited_nodes)
         is_verified = (
-            len(supersession_warnings) == 0
+            has_evidence
+            and len(supersession_warnings) == 0
             and len(contradiction_warnings) == 0
         )
-        verdict = "VERIFIED" if is_verified else "WARNINGS_FOUND"
+        if not has_evidence:
+            # Nothing was checked: "no warnings" is not the same as "verified".
+            verdict = "INSUFFICIENT_EVIDENCE"
+            alerts = alerts + [
+                {
+                    "type": "insufficient_evidence",
+                    "message": (
+                        "No claim, node, or supporting evidence was available "
+                        "to verify; the answer is unverified."
+                    ),
+                }
+            ]
+        elif is_verified:
+            verdict = "VERIFIED"
+        else:
+            verdict = "WARNINGS_FOUND"
 
         return AgentResult(
             agent_name=self.name,

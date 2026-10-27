@@ -17,6 +17,8 @@ from researchos.skills.graph_query import GraphQueryResult, GraphQuerySkill
 from researchos.skills.literature_search import (
     LiteratureSearchSkill,
     PaperResult,
+    SearchOutcome,
+    SearchStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,7 +110,7 @@ class RetrieverAgent(BaseAgent):
                 "Knowledge gap detected for '%s', searching externally",
                 query[:80],
             )
-            external_results = self._search_skill.search(
+            external_results, search_outcome = self._search_external(
                 query=query, max_results=max_results
             )
             result_data["external_results"] = [
@@ -124,19 +126,89 @@ class RetrieverAgent(BaseAgent):
                 }
                 for p in external_results
             ]
+            if search_outcome is not None:
+                result_data["external_search"] = search_outcome.to_dict()
+            else:
+                # Injected/custom search skills that only implement search().
+                result_data["external_search"] = {
+                    "status": "unknown",
+                    "provider": "custom",
+                    "result_count": len(external_results),
+                    "errors": {},
+                }
         else:
             result_data["external_results"] = []
+            result_data["external_search"] = {
+                "status": "skipped",
+                "provider": "none",
+                "result_count": 0,
+                "errors": {},
+            }
+
+        external_search = result_data["external_search"]
+        external_status = external_search.get("status")
+        degraded = external_status in ("partial", "error")
+        metadata = {
+            "internal_count": len(internal_results),
+            "has_knowledge_gap": has_gap,
+            "external_count": len(result_data.get("external_results", [])),
+            "external_search_status": external_status,
+            "degraded": degraded,
+        }
+        if external_search.get("errors"):
+            metadata["external_errors"] = external_search["errors"]
+
+        # A total provider failure is a failed retrieval, not a successful
+        # "no papers found". Partial failures stay successful but are flagged
+        # as degraded in metadata.
+        if external_status == "error":
+            errors = external_search.get("errors") or {}
+            detail = "; ".join(
+                f"{provider}: {message}" for provider, message in errors.items()
+            ) or "all providers failed"
+            return AgentResult(
+                agent_name=self.name,
+                success=False,
+                error=f"External literature search failed ({detail}).",
+                data=result_data,
+                metadata=metadata,
+            )
 
         return AgentResult(
             agent_name=self.name,
             success=True,
             data=result_data,
-            metadata={
-                "internal_count": len(internal_results),
-                "has_knowledge_gap": has_gap,
-                "external_count": len(result_data.get("external_results", [])),
-            },
+            metadata=metadata,
         )
+
+    def _search_external(
+        self, query: str, max_results: int
+    ) -> tuple[List[PaperResult], Optional[SearchOutcome]]:
+        """Call external search, preferring the outcome-aware API.
+
+        Custom/injected skills that only implement ``search()`` keep working;
+        they simply cannot report a provider status.
+        """
+        if self._search_skill is None:
+            return [], None
+
+        search_with_outcome = getattr(
+            self._search_skill, "search_with_outcome", None
+        )
+        if callable(search_with_outcome):
+            outcome: SearchOutcome = search_with_outcome(
+                query=query, max_results=max_results
+            )
+            if outcome.status is SearchStatus.ERROR:
+                logger.warning(
+                    "External search failed for '%s': %s",
+                    query[:80],
+                    outcome.errors,
+                )
+            return list(outcome.results), outcome
+
+        results = self._search_skill.search(query=query, max_results=max_results)
+        return list(results), None
 
     def _has_knowledge_gap(
         self, results: List[GraphQueryResult]

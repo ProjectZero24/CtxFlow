@@ -234,10 +234,30 @@ class SkillRouter(BaseAgent):
         # 4. Build final result
         final_data = pipeline_results[-1].data if pipeline_results else None
         all_success = all(r.success for r in pipeline_results)
+        failed_agents = [r.agent_name for r in pipeline_results if not r.success]
+
+        # Hoist the retriever's external-search outcome so API/SSE consumers can
+        # see a provider outage without digging into per-agent payloads.
+        external_search = None
+        for previous in pipeline_results:
+            if previous.agent_name == "retriever" and isinstance(previous.data, dict):
+                external_search = previous.data.get("external_search")
+                break
+
+        metadata: Dict[str, Any] = {
+            "intent": intent.value,
+            "plan": plan,
+            "agents_executed": len(pipeline_results),
+            "partial": not all_success,
+        }
+        if failed_agents:
+            metadata["failed_agents"] = failed_agents
+        if isinstance(external_search, dict):
+            metadata["external_search_status"] = external_search.get("status")
 
         return AgentResult(
             agent_name=self.name,
-            success=all_success or bool(pipeline_results),
+            success=bool(pipeline_results) and all_success,
             data={
                 "intent": intent.value,
                 "plan": plan,
@@ -251,10 +271,7 @@ class SkillRouter(BaseAgent):
                     }
                     for r in pipeline_results
                 ],
+                "external_search": external_search,
             },
-            metadata={
-                "intent": intent.value,
-                "plan": plan,
-                "agents_executed": len(pipeline_results),
-            },
+            metadata=metadata,
         )

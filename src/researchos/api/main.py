@@ -11,6 +11,10 @@ Environment variables
 RESEARCHOS_HOST : str, default ``127.0.0.1``
 RESEARCHOS_PORT : int, default ``8000``
 RESEARCHOS_RELOAD : bool, default ``false``
+RESEARCHOS_MODEL_ENABLED : bool, default ``false`` (model gateway off)
+
+See the README's "Model consumption" section for the ``RESEARCHOS_MODEL_*``
+provider settings and the ``GET /api/model/usage`` endpoint.
 """
 
 from __future__ import annotations

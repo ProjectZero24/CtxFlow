@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from researchos.api.schemas import (
     ChatRequest,
     ChatResponse,
+    ProviderOutcomeResponse,
     QueryRequest,
     QueryResponse,
     QueryResultResponse,
@@ -65,6 +66,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
             cited_nodes = pipeline_result.get("cited_nodes", [])
             alerts = pipeline_result.get("alerts", [])
 
+        # External search outcome (set by the router from the retriever step).
+        external_search = data.get("external_search")
+
         # Build trace if requested
         trace = None
         if request.include_trace and cited_nodes:
@@ -87,6 +91,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             alerts=alerts,
             trace=trace,
             metadata=result.metadata,
+            external_search=external_search,
         )
     except Exception as exc:
         logger.error("Chat endpoint failed: %s", exc, exc_info=True)
@@ -137,17 +142,48 @@ async def query_graph(request: QueryRequest) -> QueryResponse:
 
 @router.post("/search", response_model=SearchResponse)
 async def search_literature(request: SearchRequest) -> SearchResponse:
-    """Search external literature databases."""
+    """Search external literature databases.
+
+    The response always carries a ``status``: a provider outage reports
+    ``error`` (or ``partial``) with per-provider errors instead of looking like
+    a successful empty search.
+    """
     search_skill = _app_state.get("literature_search")
     if search_skill is None:
         raise HTTPException(503, detail="Literature search not initialized")
 
     try:
-        results = search_skill.search(
-            query=request.query,
-            max_results=request.max_results,
-            provider=request.provider,
-        )
+        search_with_outcome = getattr(search_skill, "search_with_outcome", None)
+        if callable(search_with_outcome):
+            outcome = search_with_outcome(
+                query=request.query,
+                max_results=request.max_results,
+                provider=request.provider,
+            )
+            results = list(outcome.results)
+            status = outcome.status.value
+            provider_name = outcome.provider
+            providers = {
+                item.provider: ProviderOutcomeResponse(**item.to_dict())
+                for item in outcome.outcomes
+            }
+            errors = dict(outcome.errors)
+            elapsed_ms = round(outcome.elapsed_ms, 3)
+        else:
+            # Injected/custom skills that only implement search() cannot report
+            # a provider status; say so instead of implying success.
+            results = list(
+                search_skill.search(
+                    query=request.query,
+                    max_results=request.max_results,
+                    provider=request.provider,
+                )
+            )
+            status = "unknown"
+            provider_name = request.provider
+            providers = {}
+            errors = {}
+            elapsed_ms = 0.0
 
         response_results = [
             SearchResultResponse(
@@ -163,7 +199,15 @@ async def search_literature(request: SearchRequest) -> SearchResponse:
             for r in results
         ]
 
-        return SearchResponse(results=response_results, total=len(results))
+        return SearchResponse(
+            results=response_results,
+            total=len(results),
+            status=status,
+            provider=provider_name,
+            providers=providers,
+            errors=errors,
+            elapsed_ms=elapsed_ms,
+        )
     except Exception as exc:
         logger.error("Search endpoint failed: %s", exc, exc_info=True)
         raise HTTPException(500, detail=str(exc))
