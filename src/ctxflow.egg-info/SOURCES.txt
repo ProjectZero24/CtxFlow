@@ -31,8 +31,6 @@ src/ctxflow/memory/store.py
 src/ctxflow/memory/tokens.py
 src/ctxflow/providers/__init__.py
 src/ctxflow/providers/groq.py
-tests/test_atomic_extraction.py
-tests/test_edge_proposer.py
 src/researchos/__init__.py
 src/researchos/agents/__init__.py
 src/researchos/agents/base.py
@@ -68,11 +66,17 @@ src/researchos/web/index.html
 src/researchos/web/styles.css
 tests/test_agents.py
 tests/test_api.py
+tests/test_atomic_extraction.py
+tests/test_classification_dataset.py
+tests/test_deduplication.py
+tests/test_edge_proposal_evaluation.py
+tests/test_edge_proposer.py
 tests/test_eval.py
 tests/test_eval_harness.py
 tests/test_extractors.py
 tests/test_governance.py
 tests/test_graph.py
+tests/test_importance.py
 tests/test_integration.py
 tests/test_local_bge.py
 tests/test_memory_vertical_slice.py
