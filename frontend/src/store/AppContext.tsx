@@ -1,0 +1,114 @@
+import { createContext, useContext, useReducer } from "react";
+import type { ReactNode } from "react";
+import type {
+  ChatMessage,
+  ProjectMeta,
+  RunRecord,
+  HealthResponse,
+  StageState,
+} from "../types";
+
+// ─── State ───────────────────────────────────────────────────────────────────
+
+interface AppState {
+  health: HealthResponse | null;
+  projects: ProjectMeta[];
+  currentProjectId: string;
+  messages: ChatMessage[];
+  runs: RunRecord[];
+  busy: boolean;
+  stageState: StageState;
+  activeRunId: string | null;
+  elapsedMs: number;
+  traceNodeId: string | null;
+  sidebarTab: "library" | "history";
+}
+
+const initialState: AppState = {
+  health: null,
+  projects: [],
+  currentProjectId: "default",
+  messages: [],
+  runs: [],
+  busy: false,
+  stageState: {},
+  activeRunId: null,
+  elapsedMs: 0,
+  traceNodeId: null,
+  sidebarTab: "library",
+};
+
+// ─── Actions ─────────────────────────────────────────────────────────────────
+
+type Action =
+  | { type: "SET_HEALTH"; payload: HealthResponse }
+  | { type: "SET_PROJECTS"; payload: ProjectMeta[] }
+  | { type: "ADD_PROJECT"; payload: ProjectMeta }
+  | { type: "SET_PROJECT"; payload: string }
+  | { type: "ADD_MESSAGE"; payload: ChatMessage }
+  | { type: "UPDATE_MESSAGE"; id: string; patch: Partial<ChatMessage> }
+  | { type: "SET_BUSY"; payload: boolean }
+  | { type: "SET_STAGE"; stage: string; status: string }
+  | { type: "RESET_STAGES" }
+  | { type: "SET_ACTIVE_RUN"; payload: string | null }
+  | { type: "SET_ELAPSED"; payload: number }
+  | { type: "SET_RUNS"; payload: RunRecord[] }
+  | { type: "SET_TRACE_NODE"; payload: string | null }
+  | { type: "SET_SIDEBAR_TAB"; payload: "library" | "history" };
+
+function reducer(state: AppState, action: Action): AppState {
+  switch (action.type) {
+    case "SET_HEALTH":    return { ...state, health: action.payload };
+    case "SET_PROJECTS":  return { ...state, projects: action.payload };
+    case "ADD_PROJECT":   return { ...state, projects: [...state.projects, action.payload] };
+    case "SET_PROJECT":   return { ...state, currentProjectId: action.payload, messages: [], runs: [], stageState: {} };
+    case "ADD_MESSAGE":   return { ...state, messages: [...state.messages, action.payload] };
+    case "UPDATE_MESSAGE":
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.id === action.id ? { ...m, ...action.patch } : m
+        ),
+      };
+    case "SET_BUSY":      return { ...state, busy: action.payload };
+    case "SET_STAGE":
+      return { ...state, stageState: { ...state.stageState, [action.stage]: action.status as StageState[string] } };
+    case "RESET_STAGES":  return { ...state, stageState: {} };
+    case "SET_ACTIVE_RUN": return { ...state, activeRunId: action.payload };
+    case "SET_ELAPSED":   return { ...state, elapsedMs: action.payload };
+    case "SET_RUNS":      return { ...state, runs: action.payload };
+    case "SET_TRACE_NODE": return { ...state, traceNodeId: action.payload };
+    case "SET_SIDEBAR_TAB": return { ...state, sidebarTab: action.payload };
+    default:              return state;
+  }
+}
+
+// ─── Context ─────────────────────────────────────────────────────────────────
+
+interface AppContextValue {
+  state: AppState;
+  dispatch: React.Dispatch<Action>;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  return <AppContext.Provider value={{ state, dispatch }}>{children}</AppContext.Provider>;
+}
+
+export function useApp() {
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error("useApp must be used within AppProvider");
+  return ctx;
+}
+
+// ─── Convenience hooks ────────────────────────────────────────────────────────
+
+export function useDispatch() {
+  return useApp().dispatch;
+}
+
+export function useAppState() {
+  return useApp().state;
+}
