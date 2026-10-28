@@ -1,10 +1,10 @@
 """Curated, offline demo corpus for the ResearchOS workspace.
 
-The corpus contains real arXiv metadata (titles, authors, abstracts, IDs) so a
-demo can populate the graph without depending on a live search provider. Four
-entries are clearly-marked synthetic benchmark reports that carry a curated
-supersession/contradiction scenario; they exist so the demo can show correction
-propagation and contested claims without pretending a model detected them.
+The corpus contains only real arXiv papers (titles, authors, abstracts, IDs) so
+a demo can populate the graph without depending on a live search provider. The
+two curated relations in ``relations.json`` connect claims from real papers; the
+demo shows correction propagation and contested claims without pretending a
+model detected them.
 
 Seed uses the same ingest path as ``POST /api/papers/ingest``: one paper node
 plus one claim node per abstract sentence, linked with an ``extracted_from``

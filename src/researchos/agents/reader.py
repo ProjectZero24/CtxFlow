@@ -137,11 +137,11 @@ class ReaderAgent(BaseAgent):
                     }
                     for claim in self._paper_reader.extract_claims(str(pdf_path))
                 ]
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "Paper Reader failed for %s; falling back to abstract",
+                    "Paper Reader failed for %s (%s); falling back to abstract",
                     pdf_path,
-                    exc_info=True,
+                    exc,
                 )
 
         # 1. Create paper reference node
@@ -237,10 +237,9 @@ class ReaderAgent(BaseAgent):
                 from ctxflow.llm_extractor import LLMExtractor
                 extractor = LLMExtractor(llm=self._llm)
                 return extractor.extract_claims(abstract)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "LLM claim extraction failed, using heuristic",
-                    exc_info=True,
+                    "LLM claim extraction failed (%s), using heuristic", exc
                 )
 
         # Heuristic fallback: split abstract into sentences

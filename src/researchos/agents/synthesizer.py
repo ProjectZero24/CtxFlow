@@ -139,7 +139,12 @@ class SynthesizerAgent(BaseAgent):
                     str(exc).strip() or type(exc).__name__
                 )
                 logger.warning("LLM synthesis failed: %s", llm_error)
-                answer = f"{_LLM_FAILED_HEADER}{prompt_context}"
+                # Never dump the wrapped prompt (it contains untrusted-source
+                # boundary markers) into the user-visible answer. Fall back to
+                # the same readable evidence bullets as model-off mode.
+                answer = self._synthesize_heuristic(
+                    query, packed, header=_LLM_FAILED_HEADER
+                )
         else:
             answer = self._synthesize_heuristic(query, packed)
 
@@ -308,10 +313,14 @@ class SynthesizerAgent(BaseAgent):
         return self._llm(prompt, system=_SYNTHESIS_SYSTEM).strip()
 
     def _synthesize_heuristic(
-        self, query: str, results: List[QueryResult]
+        self,
+        query: str,
+        results: List[QueryResult],
+        *,
+        header: str = _NO_LLM_HEADER,
     ) -> str:
         """Fallback: build a structured response without LLM."""
-        parts = [_NO_LLM_HEADER]
+        parts = [header]
 
         for r in results:
             status_note = ""

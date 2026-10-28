@@ -286,6 +286,20 @@ class TestCompletion:
         assert gateway.usage()["failures"] == 1
         assert sleeps == []
 
+    def test_auth_failure_trips_a_circuit_breaker(self):
+        """An invalid key must not be retried on every later call."""
+        gateway, client, _ = gateway_with([StatusError(401), response("ok")])
+        calls_before = len(client.completions.calls)
+
+        with pytest.raises(ModelCallError):
+            gateway.complete("first")
+
+        # The second call fails fast without touching the provider.
+        with pytest.raises(ModelCallError, match="authentication failure"):
+            gateway.complete("second")
+
+        assert len(client.completions.calls) == calls_before + 1
+
     def test_exhausted_retries_raises_with_attempt_count(self):
         gateway, _, sleeps = gateway_with(
             [StatusError(503), StatusError(503), StatusError(503)]
@@ -491,7 +505,7 @@ class TestSynthesisFailurePropagation:
         assert any(alert["type"] == "llm_failure" for alert in body["alerts"])
         assert "synthesis model was unavailable" in body["answer"]
 
-    def test_stream_marks_synthesizer_as_failed(self):
+    def test_stream_degrades_when_synthesizer_fails(self):
         """A broken model gateway should result in a degraded (not failed) run.
 
         The new ResearchWorkflow SSE done-event carries status/degraded/errors
@@ -517,12 +531,14 @@ class TestSynthesisFailurePropagation:
                             break
 
         assert done is not None, "Stream did not emit a 'done' event"
-        # The workflow should not hard-fail; it degrades gracefully.
-        assert done.get("status") in (
-            "degraded", "completed", "failed"
-        ), f"Unexpected status: {done.get('status')}"
+        # A broken model must degrade the answer, not fail the run: the graph
+        # evidence and the verdict are still usable.
+        assert done.get("status") == "degraded"
+        assert done.get("success") is True
+        assert done.get("degraded") is True
+        assert done.get("errors")
         # Answer must be present (heuristic fallback when LLM fails).
-        assert "answer" in done
+        assert done.get("answer")
         # Secrets must not leak into the response.
         assert "api_key" not in json.dumps(done)
 

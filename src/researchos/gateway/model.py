@@ -423,6 +423,17 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
+def _is_auth_error(exc: BaseException) -> bool:
+    """True for a bad/missing API key (HTTP 401), which will not self-heal."""
+
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = _get_attr_or_key(getattr(exc, "response", None), "status_code")
+    if status == 401:
+        return True
+    return "authentication" in type(exc).__name__.lower()
+
+
 # ---------------------------------------------------------------------------
 # Gateway
 # ---------------------------------------------------------------------------
@@ -459,6 +470,9 @@ class ModelGateway:
         self._closed = False
         self._stats = _Stats()
         self._by_model: Dict[str, _Stats] = {}
+        # Set after an authentication failure: retrying an invalid key on every
+        # claim/tag/synthesis call would make ingestion crawl and spam the log.
+        self._unavailable_reason: Optional[str] = None
 
     # -- provider ---------------------------------------------------------
 
@@ -540,6 +554,11 @@ class ModelGateway:
 
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
+        if self._unavailable_reason:
+            raise ModelCallError(
+                "model gateway disabled after an authentication failure: "
+                f"{self._unavailable_reason}"
+            )
         client = self._get_client()
 
         token_limit = self.config.max_tokens if max_tokens is None else max_tokens
@@ -577,6 +596,10 @@ class ModelGateway:
                 if attempt >= self.config.max_retries or not _is_retryable(exc):
                     latency_ms = (self._clock() - started) * 1000.0
                     self._record_failure(latency_ms)
+                    if _is_auth_error(exc):
+                        self._unavailable_reason = (
+                            str(exc).strip() or type(exc).__name__
+                        )
                     raise ModelCallError(
                         f"model call failed after {attempts} attempt(s): {exc}",
                         attempts=attempts,

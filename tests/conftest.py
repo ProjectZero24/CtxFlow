@@ -31,6 +31,11 @@ MODEL_ENV_VARS = (
 @pytest.fixture(autouse=True)
 def isolate_model_environment(monkeypatch):
     """Clear model env vars and ignore the project .env for every test."""
+    # ``researchos.api.server`` calls ``load_dotenv`` at import time. Import it
+    # here first so that side effect happens *before* the cleanup below, even
+    # when a test imports the server lazily from inside a fixture.
+    import researchos.api.server  # noqa: F401
+
     for name in MODEL_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 

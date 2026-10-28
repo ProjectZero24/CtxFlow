@@ -378,9 +378,16 @@ class ResearchWorkflow:
                 )
                 read_data = read_result.data or {}
                 state["ingested_papers"] = read_data.get("ingested_papers") or []
+                if not read_result.success:
+                    # A paper that could not be read costs evidence but must
+                    # not discard the graph answer; surface it as degradation.
+                    state["degraded"] = True
+                    state["errors"] = list(state.get("errors") or []) + [
+                        read_result.error or "paper reader failed"
+                    ]
                 self._emit(
                     "read",
-                    "completed",
+                    "completed" if read_result.success else "degraded",
                     f"Ingested {len(state['ingested_papers'])} paper(s).",
                     {
                         "ingested_papers": state["ingested_papers"],
@@ -490,7 +497,7 @@ class ResearchWorkflow:
         state["alerts"] = list(synth_data.get("alerts") or [])
         self._emit(
             "synthesize",
-            "completed" if not state.get("degraded") else "degraded",
+            "completed" if state.get("synthesis_ok", True) else "degraded",
             "Answer drafted from packed evidence.",
             {
                 "cited_nodes": state["cited_nodes"],
@@ -707,10 +714,17 @@ class ResearchWorkflow:
 
     @staticmethod
     def _status_from_state(state: ResearchState) -> tuple[bool, str]:
+        """Map run state to ``(success, status)``.
+
+        ``degraded`` is still a *successful* run: the graph produced an answer
+        and a verdict, but a model call, a paper reader, an external provider,
+        or the miss part of the pipeline was unavailable. Only a guardrail
+        block, cancellation, or an exceeded wall-clock budget (all of which set
+        ``stop``) is a failed run. The accumulated ``errors`` strings are kept
+        for the UI; they do not by themselves fail the run.
+        """
         if state.get("stop"):
             return False, str(state.get("stop_status") or "failed")
-        if state.get("errors"):
-            return False, "failed"
         if state.get("degraded"):
             return True, "degraded"
         return True, "completed"

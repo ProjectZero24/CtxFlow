@@ -407,6 +407,8 @@ class RunResponse(BaseModel):
     project_id: str = "default"
     query: str = ""
     status: str = "queued"
+    success: Optional[bool] = None
+    engine: str = "sequential"
     stage: str = ""
     intent: Optional[str] = None
     plan: List[str] = Field(default_factory=list)
@@ -416,12 +418,14 @@ class RunResponse(BaseModel):
     verdict: str = ""
     cited_nodes: List[str] = Field(default_factory=list)
     packed_node_ids: List[str] = Field(default_factory=list)
+    excluded_node_ids: List[str] = Field(default_factory=list)
     alerts: List[Dict[str, Any]] = Field(default_factory=list)
     validations: List[Dict[str, Any]] = Field(default_factory=list)
     context_usage: Dict[str, Any] = Field(default_factory=dict)
     external_search: Optional[Dict[str, Any]] = None
     errors: List[str] = Field(default_factory=list)
     degraded: bool = False
+    repairs: int = 0
     events: List[Dict[str, Any]] = Field(default_factory=list)
     graph_nodes: int = 0
     graph_edges: int = 0

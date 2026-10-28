@@ -45,6 +45,17 @@ For a fully offline, deterministic demo set
 `$env:RESEARCHOS_EXTERNAL_SEARCH="off"`. The corpus is committed, so the graph
 path never needs the network.
 
+### Run outcomes
+
+| Status | Meaning |
+|---|---|
+| `completed` | Every stage succeeded |
+| `degraded` | Answer + verdict produced, but a model/provider/reader step failed; `success` is still `true` and `errors` explains why |
+| `failed` | Guardrail block, cancellation, wall-clock budget, or an unexpected crash |
+
+`/api/runs` returns the persisted status, `success`, `engine`, `repairs`, and
+`errors` for each run, so the Run History panel can show exactly what happened.
+
 ---
 
 ## Demo Steps
@@ -156,9 +167,13 @@ as a degraded run rather than a crash.
 
 ### Step 6 — Model-off / provider failure (30 s)
 Restart with `$env:RESEARCHOS_MODEL_ENABLED="0"` and ask the Step 2 question.
+You can also leave the model enabled with an **invalid key**: the first 401 trips
+a circuit breaker, so later calls fail fast instead of retrying on every node.
 
 **Pass condition:** answer is still returned from graph nodes; verdict is
-`VERIFIED`/`WARNINGS_FOUND`/`INSUFFICIENT_EVIDENCE`; never a 500.
+`VERIFIED`/`WARNINGS_FOUND`/`INSUFFICIENT_EVIDENCE`; never a 500. The done event
+reports `"status": "degraded"` and `"success": true` — a dead model costs
+synthesis quality, not the run.
 
 ---
 

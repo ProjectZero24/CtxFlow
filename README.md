@@ -329,6 +329,11 @@ proxied OpenAI-compatible endpoints. Only `src/researchos/gateway/model.py`
 imports a provider SDK; agents and skills receive a plain
 `(prompt, system="") -> str` callable.
 
+A model outage is never fatal. A failed call degrades the answer to the
+deterministic evidence bullets and sets `"status": "degraded"` on the run
+(`success` stays `true`). An invalid API key also trips a circuit breaker after
+the first 401, so ingestion does not retry a dead provider for every node.
+
 ```python
 from researchos.gateway import create_model_gateway
 
