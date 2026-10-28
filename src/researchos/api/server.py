@@ -2,9 +2,9 @@
 
 Creates and configures the FastAPI application instance:
 - CORS middleware
-- Lifespan context for initializing CtxFlow, Skills, and Agents
-- SSE (Server-Sent Events) streaming endpoint for live research updates
-- REST routes mounting (/api/chat, /api/query, /api/papers, /api/graph, /api/trace, etc.)
+- Lifespan context initializing CtxFlow, ResearchWorkspace, Skills, Agents, Workflow
+- SSE (Server-Sent Events) streaming endpoint for live 8-stage workflow events
+- REST routes (chat, papers, notes, projects, runs)
 - Health checks and skill registry discovery
 """
 
@@ -13,9 +13,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional
+
+# ── Load .env before anything reads os.environ ────────────────────────────────
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(dotenv_path=Path(__file__).parents[3] / ".env", override=False)
+except ImportError:
+    pass  # python-dotenv optional — set env vars manually if not installed
+# ──────────────────────────────────────────────────────────────────────────────
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,18 +44,25 @@ from researchos.agents.trace import TraceAgent
 from researchos.api.routes import chat as chat_routes
 from researchos.api.routes import notes as notes_routes
 from researchos.api.routes import papers as papers_routes
+from researchos.api.routes import projects as projects_routes
+from researchos.api.routes import runs as runs_routes
 from researchos.api.schemas import (
     HealthResponse,
     ModelUsageResponse,
+    RunResponse,
     SkillInfoResponse,
     SkillListResponse,
 )
 from researchos.gateway import ModelGateway, create_model_gateway
+from researchos.orchestration.workflow import build_orchestrator
+from researchos.persistence import ResearchWorkspace, new_run_id
+from researchos.pipeline import make_router, redact_secrets
 from researchos.skills.graph_query import GraphQuerySkill
 from researchos.skills.literature_search import LiteratureSearchSkill
 from researchos.skills.paper_reader import PaperReaderSkill
 from researchos.skills.registry import SkillRegistry
 from researchos.skills.review_writer import ReviewWriterSkill
+from researchos.memory.context import create_context_provider
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +74,20 @@ def create_app(
     ctxflow: Optional[CtxFlow] = None,
     skill_registry: Optional[SkillRegistry] = None,
     router_agent: Optional[SkillRouter] = None,
+    memory_store: Any | None = None,
     enable_cors: bool = True,
     model_gateway: Optional[ModelGateway] = None,
+    workspace: Optional[ResearchWorkspace] = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Parameters
     ----------
     ctxflow : CtxFlow | None
-        Existing CtxFlow instance. If None, initialized with in-memory graph.
+        Existing CtxFlow instance. When *workspace* is also None, this is
+        the single shared graph (legacy / test mode). When *workspace* is
+        provided, this is ignored for project-scoped runs and only used as the
+        default fallback for the old /api/chat route.
     skill_registry : SkillRegistry | None
         Existing SkillRegistry instance. If None, created and populated.
     router_agent : SkillRouter | None
@@ -74,7 +97,9 @@ def create_app(
     model_gateway : ModelGateway | None
         Injected gateway (tests/embedders). If None, the gateway is created
         from ``RESEARCHOS_MODEL_*`` only when ``RESEARCHOS_MODEL_ENABLED`` is
-        truthy; otherwise no model is wired and behaviour is unchanged.
+        truthy; otherwise no model is wired.
+    workspace : ResearchWorkspace | None
+        Injected workspace (tests). If None, created from env / data dir.
     """
 
     # Shared state container
@@ -82,18 +107,37 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # 1. Initialize CtxFlow core
-        nonlocal ctxflow, skill_registry, router_agent
-        if ctxflow is None:
-            ctxflow = CtxFlow()
-        state["ctxflow"] = ctxflow
+        nonlocal ctxflow, skill_registry, router_agent, workspace
 
-        # 1b. Resolve the optional model callable. Default is disabled, so no
-        # network client is created and agents keep their deterministic path.
+        # 1a. Resolve the ResearchWorkspace (project-scoped persistence)
+        if workspace is None:
+            workspace = ResearchWorkspace(injected_ctxflow=ctxflow)
+        state["workspace"] = workspace
+
+        # 1b. Resolve the default CtxFlow (used for legacy /api/chat)
+        if ctxflow is None:
+            ctxflow = workspace.get_graph("default")
+        state["ctxflow"] = ctxflow
+        if memory_store is not None:
+            provider = create_context_provider(memory_store)
+            if provider is not None:
+                state["context_provider"] = provider
+                app.state.context_provider = provider
+
+        # 1c. Resolve the optional model gateway — gracefully degrade when
+        #     the API key is missing or the provider is misconfigured.
+        from researchos.gateway.model import ModelConfigError  # local import to avoid circular
         owns_gateway = model_gateway is None
-        gateway = (
-            model_gateway if model_gateway is not None else create_model_gateway()
-        )
+        gateway = model_gateway
+        if gateway is None:
+            try:
+                gateway = create_model_gateway()
+            except (ModelConfigError, Exception) as exc:
+                logger.warning(
+                    "Model gateway not available (%s: %s); running in heuristic mode.",
+                    type(exc).__name__, exc,
+                )
+                gateway = None
         state["model_gateway"] = gateway
         llm = gateway if gateway is not None else None
         if gateway is not None:
@@ -102,8 +146,25 @@ def create_app(
                 gateway.config.provider,
                 gateway.config.model_id,
             )
+
         # 2. Initialize Skills
-        lit_search = LiteratureSearchSkill()
+        #    arXiv search goes through the MCP server (``uvx arxiv-mcp-server``)
+        #    when available; LiteratureSearchSkill falls back to the HTTP API
+        #    on any MCP failure so the demo still works offline.
+        arxiv_mcp = None
+        try:
+            from researchos.mcp import ArxivMCPClient
+            from researchos.mcp.arxiv import mcp_enabled
+
+            if mcp_enabled():
+                arxiv_mcp = ArxivMCPClient()
+                logger.info("arXiv MCP client enabled (uvx arxiv-mcp-server)")
+        except Exception as exc:  # noqa: BLE001 — MCP is optional
+            logger.warning("arXiv MCP client unavailable: %s", exc)
+            arxiv_mcp = None
+        state["arxiv_mcp"] = arxiv_mcp
+
+        lit_search = LiteratureSearchSkill(arxiv_client=arxiv_mcp)
         paper_reader = PaperReaderSkill(llm=llm)
         graph_query = GraphQuerySkill(ctxflow)
         review_writer = ReviewWriterSkill(ctxflow, llm=llm)
@@ -128,7 +189,12 @@ def create_app(
                         "max_results": {"type": "integer", "minimum": 1},
                         "provider": {
                             "type": "string",
-                            "enum": ["arxiv", "semantic_scholar", "both"],
+                            "enum": [
+                                "arxiv",
+                                "semantic_scholar",
+                                "openalex",
+                                "both",
+                            ],
                         },
                     },
                     "required": ["query"],
@@ -197,7 +263,7 @@ def create_app(
             )
         state["skill_registry"] = skill_registry
 
-        # 4. Initialize Multi-Agent Pipeline
+        # 4. Initialize Multi-Agent Pipeline (legacy /api/chat path)
         if router_agent is None:
             retriever = RetrieverAgent(
                 ctxflow=ctxflow, literature_search=lit_search, llm=llm
@@ -226,17 +292,25 @@ def create_app(
         app.state.skill_registry = skill_registry
         app.state.router = router_agent
         app.state.model_gateway = gateway
+        app.state.workspace = workspace
 
         # 5. Inject dependencies into routes
         chat_routes.set_app_state(state)
         papers_routes.set_app_state(state)
         notes_routes.set_app_state(state)
+        projects_routes.set_app_state(state)
+        runs_routes.set_app_state(state)
 
         yield
 
         # Teardown
         try:
             lit_search.close()
+        except Exception:
+            pass
+        try:
+            if state.get("arxiv_mcp") is not None:
+                state["arxiv_mcp"].close()
         except Exception:
             pass
         if owns_gateway and gateway is not None:
@@ -248,6 +322,7 @@ def create_app(
         version="0.2.0",
         lifespan=lifespan,
     )
+    app.state.context_provider = None
 
     if enable_cors:
         app.add_middleware(
@@ -262,11 +337,15 @@ def create_app(
     app.include_router(chat_routes.router)
     app.include_router(papers_routes.router)
     app.include_router(notes_routes.router)
+    app.include_router(projects_routes.router)
+    app.include_router(runs_routes.router)
 
     # Root & Health Endpoints
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
         c = state.get("ctxflow")
+        ws: Optional[ResearchWorkspace] = state.get("workspace")
+        gw: Optional[ModelGateway] = state.get("model_gateway")
         nodes = c.graph.node_count if c else 0
         edges = c.graph.edge_count if c else 0
         return HealthResponse(
@@ -274,6 +353,10 @@ def create_app(
             version="0.2.0",
             graph_nodes=nodes,
             graph_edges=edges,
+            persistence=ws.backend if ws else "memory",
+            model_enabled=gw is not None,
+            model_provider=gw.config.provider if gw else None,
+            model_id=gw.config.model_id if gw else None,
         )
 
     @app.get("/api/skills", response_model=SkillListResponse, tags=["skills"])
@@ -314,39 +397,141 @@ def create_app(
             by_model=gateway.usage_by_model(),
         )
 
+    # ---------------------------------------------------------------------------
+    # Legacy SSE stream (old SkillRouter path — kept for backward compatibility)
+    # ---------------------------------------------------------------------------
+
     @app.get("/api/stream", tags=["stream"])
-    async def stream_query(query: str, request: Request):
-        """SSE streaming endpoint for real-time multi-agent execution events."""
-        skill_router: Optional[SkillRouter] = state.get("router")
-        if not skill_router:
-            raise HTTPException(503, detail="Router agent not initialized")
+    async def stream_query(
+        query: str,
+        request: Request,
+        token_budget: int = 2048,
+        project_id: str = "default",
+    ):
+        """SSE streaming endpoint — 8-stage research execution.
+
+        Runs on the LangGraph orchestrator by default (unless
+        ``RESEARCHOS_ORCHESTRATOR=sequential`` or LangGraph is unavailable).
+        Each event carries: event=stage_name, data=JSON with
+        {run_id, stage, status, message, ts, data}.
+        The final event is event=done with the full run record.
+        """
+        ws: Optional[ResearchWorkspace] = state.get("workspace")
+        gw: Optional[ModelGateway] = state.get("model_gateway")
+        lit_search: Optional[LiteratureSearchSkill] = state.get("literature_search")
+        paper_reader_skill: Optional[PaperReaderSkill] = state.get("paper_reader")
+
+        if not ws:
+            raise HTTPException(503, detail="Workspace not initialized")
+
+        run_id = new_run_id()
+        project_graph = ws.get_graph(project_id)
+
+        def _save_graph() -> None:
+            ws.save_graph(project_id)
+
+        workflow = build_orchestrator(
+            project_graph,
+            literature_search=lit_search,
+            paper_reader=paper_reader_skill,
+            llm=gw,
+            persist=_save_graph,
+        )
+
+        # Thread-safe event queue: workflow runs in a thread; SSE reads here
+        event_queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def on_event(ev: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(event_queue.put_nowait, ev)
+
+        cancel_event = threading.Event()
+        result_holder: Dict[str, Any] = {}
+
+        def _run_workflow() -> None:
+            result = workflow.run(
+                query=query,
+                run_id=run_id,
+                project_id=project_id,
+                token_budget=max(1, int(token_budget)),
+                on_event=on_event,
+                cancel_event=cancel_event,
+            )
+            result_holder["result"] = result
+            loop.call_soon_threadsafe(event_queue.put_nowait, None)  # sentinel
 
         async def event_generator() -> AsyncGenerator[Dict[str, Any], None]:
+            # Start the workflow in a background thread
+            thread = threading.Thread(target=_run_workflow, daemon=True)
+            thread.start()
+
             yield {
                 "event": "start",
-                "data": json.dumps({"query": query, "message": "Classifying query intent..."}),
+                "data": json.dumps({
+                    "run_id": run_id,
+                    "query": query,
+                    "project_id": project_id,
+                    "engine": getattr(workflow, "engine", "sequential"),
+                    "message": "Workflow started",
+                }),
             }
-            await asyncio.sleep(0.01)
 
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: skill_router.run(query=query))
+            try:
+                while True:
+                    # Check for client disconnect
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        break
 
-            # Stream pipeline progress events
-            pipeline_results = (result.data or {}).get("pipeline_results", [])
-            for pr in pipeline_results:
-                yield {
-                    "event": "agent_completed",
-                    "data": json.dumps(pr),
-                }
-                await asyncio.sleep(0.01)
+                    try:
+                        ev = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+
+                    if ev is None:  # sentinel — workflow finished
+                        break
+
+                    yield {
+                        "event": ev.get("stage", "stage"),
+                        "data": json.dumps(redact_secrets(ev)),
+                    }
+            finally:
+                cancel_event.set()
+
+            # Emit final done event
+            result = result_holder.get("result") or {}
+
+            # Persist the run record
+            if ws:
+                try:
+                    record = {
+                        "started_at": result.get("events", [{}])[0].get("ts", time.time()) if result.get("events") else time.time(),
+                        "ended_at": time.time(),
+                        **{k: v for k, v in result.items()},
+                    }
+                    ws.save_run(record)
+                except Exception as exc:
+                    logger.warning("Failed to save run record: %s", exc)
 
             yield {
                 "event": "done",
-                "data": json.dumps({
-                    "success": result.success,
-                    "data": result.data,
-                    "metadata": result.metadata,
-                }),
+                "data": json.dumps(redact_secrets({
+                    "run_id": run_id,
+                    "status": result.get("status", "unknown"),
+                    "success": result.get("success", False),
+                    "engine": result.get("engine", getattr(workflow, "engine", "sequential")),
+                    "answer": result.get("answer", ""),
+                    "verdict": result.get("verdict", ""),
+                    "cited_nodes": result.get("cited_nodes", []),
+                    "alerts": result.get("alerts", []),
+                    "context_usage": result.get("context_usage", {}),
+                    "external_search": result.get("external_search"),
+                    "degraded": result.get("degraded", False),
+                    "errors": result.get("errors", []),
+                    "graph_nodes": result.get("graph_nodes", 0),
+                    "graph_edges": result.get("graph_edges", 0),
+                    "structured": result.get("structured", {}),
+                })),
             }
 
         return EventSourceResponse(event_generator())

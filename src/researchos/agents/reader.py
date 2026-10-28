@@ -9,6 +9,7 @@ detection.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 from ctxflow import CtxFlow
@@ -16,6 +17,21 @@ from researchos.agents.base import AgentResult, BaseAgent
 from researchos.skills.paper_reader import PaperReaderSkill
 
 logger = logging.getLogger(__name__)
+
+_FALSEY = frozenset({"0", "false", "no", "off"})
+
+
+def llm_claim_extraction_enabled() -> bool:
+    """Whether abstracts may be sent to the model for claim extraction.
+
+    Free provider tiers cap tokens per minute (Groq's is 8k), and reading a
+    handful of fresh abstracts can consume the whole window before
+    synthesis runs. Set ``RESEARCHOS_LLM_CLAIM_EXTRACTION=0`` to keep claim
+    extraction deterministic and reserve the model for the answer.
+    """
+
+    raw = str(os.environ.get("RESEARCHOS_LLM_CLAIM_EXTRACTION", "")).strip().lower()
+    return raw not in _FALSEY
 
 
 class ReaderAgent(BaseAgent):
@@ -137,11 +153,11 @@ class ReaderAgent(BaseAgent):
                     }
                     for claim in self._paper_reader.extract_claims(str(pdf_path))
                 ]
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "Paper Reader failed for %s; falling back to abstract",
+                    "Paper Reader failed for %s (%s); falling back to abstract",
                     pdf_path,
-                    exc_info=True,
+                    exc,
                 )
 
         # 1. Create paper reference node
@@ -152,6 +168,10 @@ class ReaderAgent(BaseAgent):
             paper_content += f"\nYear: {year}"
         if doi:
             paper_content += f"\nDOI: {doi}"
+
+        existing = self._find_duplicate(title, arxiv_id, doi)
+        if existing is not None:
+            return [existing]
 
         paper_metadata = {
             "title": title,
@@ -209,19 +229,33 @@ class ReaderAgent(BaseAgent):
 
         return node_ids
 
+    def _find_duplicate(self, title: str, arxiv_id: str, doi: str) -> Optional[str]:
+        title_key = " ".join(title.lower().split())
+        for node in self._ctx.graph.all_nodes():
+            if node.node_type != "paper":
+                continue
+            meta = node.metadata or {}
+            if arxiv_id and str(meta.get("arxiv_id") or "") == arxiv_id:
+                return node.id
+            if doi and str(meta.get("doi") or "") == doi:
+                return node.id
+            existing_title = " ".join(str(meta.get("title") or "").lower().split())
+            if title_key and existing_title == title_key:
+                return node.id
+        return None
+
     def _extract_abstract_claims(
         self, abstract: str
     ) -> List[Dict[str, Any]]:
         """Extract claims from an abstract using LLM or heuristics."""
-        if self._llm:
+        if self._llm and llm_claim_extraction_enabled():
             try:
                 from ctxflow.llm_extractor import LLMExtractor
                 extractor = LLMExtractor(llm=self._llm)
                 return extractor.extract_claims(abstract)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "LLM claim extraction failed, using heuristic",
-                    exc_info=True,
+                    "LLM claim extraction failed (%s), using heuristic", exc
                 )
 
         # Heuristic fallback: split abstract into sentences

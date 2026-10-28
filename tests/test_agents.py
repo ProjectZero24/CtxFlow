@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import List
+
 import pytest
 
 from ctxflow import CtxFlow
@@ -79,6 +81,27 @@ class TestReaderAgent:
         assert res.success is True
         assert res.data["total_nodes_created"] >= 2
         assert cf.graph.node_count >= 2
+
+    def test_claim_extraction_can_skip_the_model(self, monkeypatch):
+        """Token-capped tiers keep the model for synthesis, not extraction."""
+        monkeypatch.setenv("RESEARCHOS_LLM_CLAIM_EXTRACTION", "0")
+
+        prompts: List[str] = []
+
+        def llm(prompt, system=""):
+            prompts.append(prompt)
+            return "[]"
+
+        cf = CtxFlow()
+        reader = ReaderAgent(ctxflow=cf, llm=llm)
+        claims = reader._extract_abstract_claims(
+            "We introduce Mamba, a fast architecture. "
+            "It achieves 5x higher throughput than Transformers."
+        )
+
+        assert prompts == []
+        assert len(claims) == 2
+        assert "Mamba" in claims[0]["text"]
 
 
 class TestSynthesizerAgent:

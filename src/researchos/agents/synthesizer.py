@@ -9,11 +9,13 @@ the LLM prompt, mitigating the "lost-in-the-middle" phenomenon.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Callable, Dict, List, Optional
 
 from ctxflow import CtxFlow
 from ctxflow.models import NodeStatus, QueryResult
 from researchos.agents.base import AgentResult, BaseAgent
+from researchos.guardrails import wrap_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,7 @@ class SynthesizerAgent(BaseAgent):
             any supersession alerts.
         """
         query: str = kwargs.get("query", "")
+        context: Dict[str, Any] = kwargs.get("context") or {}
 
         if not query:
             return AgentResult(
@@ -95,6 +98,8 @@ class SynthesizerAgent(BaseAgent):
                 success=False,
                 error="No query provided.",
             )
+
+        budget = self._resolve_budget(context.get("token_budget"))
 
         # 1. Retrieve relevant nodes from graph
         results: List[QueryResult] = self._ctx.query(
@@ -112,13 +117,14 @@ class SynthesizerAgent(BaseAgent):
                     "cited_nodes": [],
                     "alerts": [],
                 },
+                metadata=self._context_metadata(0, 0, 0, budget),
             )
 
         # 2. Apply bias-aware ordering
         ordered = self._bias_aware_reorder(results)
 
         # 3. Pack within token budget
-        packed = self._pack_within_budget(ordered)
+        packed, tokens_used = self._pack_within_budget(ordered, budget)
 
         # 4. Build the prompt context
         prompt_context = self._build_prompt_context(packed)
@@ -133,7 +139,12 @@ class SynthesizerAgent(BaseAgent):
                     str(exc).strip() or type(exc).__name__
                 )
                 logger.warning("LLM synthesis failed: %s", llm_error)
-                answer = f"{_LLM_FAILED_HEADER}{prompt_context}"
+                # Never dump the wrapped prompt (it contains untrusted-source
+                # boundary markers) into the user-visible answer. Fall back to
+                # the same readable evidence bullets as model-off mode.
+                answer = self._synthesize_heuristic(
+                    query, packed, header=_LLM_FAILED_HEADER
+                )
         else:
             answer = self._synthesize_heuristic(query, packed)
 
@@ -165,12 +176,41 @@ class SynthesizerAgent(BaseAgent):
                 "alerts": alerts,
             },
             metadata={
-                "nodes_used": len(packed),
-                "token_budget": self.token_budget,
+                **self._context_metadata(
+                    len(results), len(packed), tokens_used, budget
+                ),
                 "degraded": llm_error is not None,
                 "llm_error": llm_error,
             },
         )
+
+    def _resolve_budget(self, raw: Any) -> int:
+        """Return a positive per-request budget, falling back to the default."""
+        try:
+            budget = int(raw)
+        except (TypeError, ValueError):
+            return self.token_budget
+        return budget if budget > 0 else self.token_budget
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return max(1, math.ceil(len(text) / 4)) if text else 0
+
+    def _context_metadata(
+        self,
+        retrieved: int,
+        used: int,
+        tokens_used: int,
+        budget: int,
+    ) -> Dict[str, Any]:
+        """Metadata that lets the API/UI show how the context window was used."""
+        return {
+            "nodes_retrieved": retrieved,
+            "nodes_used": used,
+            "nodes_dropped": max(0, retrieved - used),
+            "tokens_used": tokens_used,
+            "token_budget": budget,
+        }
 
     def _bias_aware_reorder(
         self, results: List[QueryResult]
@@ -212,24 +252,33 @@ class SynthesizerAgent(BaseAgent):
 
         return front + normal + back
 
+    @staticmethod
+    def _node_text(node: Any) -> str:
+        """Return exactly the text the synthesizer puts in the prompt."""
+        return node.summary if node.summary else node.content[:400]
+
     def _pack_within_budget(
-        self, results: List[QueryResult]
-    ) -> List[QueryResult]:
-        """Greedily pack results within the token budget."""
-        chars_per_token = 4
-        max_chars = self.token_budget * chars_per_token
+        self, results: List[QueryResult], budget: Optional[int] = None
+    ) -> tuple[List[QueryResult], int]:
+        """Greedily pack results within the token budget.
+
+        Returns the packed results and the estimated number of context
+        tokens they consume. Nodes that do not fit are dropped rather than
+        truncated so every cited node is represented faithfully.
+        """
+        max_tokens = max(1, int(budget if budget is not None else self.token_budget))
 
         packed: List[QueryResult] = []
-        total_chars = 0
+        used = 0
 
         for r in results:
-            node_chars = len(r.node.content) + len(r.node.summary or "")
-            if total_chars + node_chars > max_chars:
+            tokens = self._estimate_tokens(self._node_text(r.node))
+            if used + tokens > max_tokens:
                 continue
-            total_chars += node_chars
+            used += tokens
             packed.append(r)
 
-        return packed
+        return packed, used
 
     def _build_prompt_context(
         self, results: List[QueryResult]
@@ -244,7 +293,7 @@ class SynthesizerAgent(BaseAgent):
             elif r.node.status in (NodeStatus.CONTESTED, "contested"):
                 status_marker = " [CONTESTED]"
 
-            text = r.node.summary if r.node.summary else r.node.content[:400]
+            text = wrap_untrusted(self._node_text(r.node), source=f"node:{r.node.id}")
             parts.append(
                 f"[Node:{r.node.id}]{status_marker} "
                 f"(type={r.node.node_type}, score={r.score:.3f}):\n{text}"
@@ -264,10 +313,14 @@ class SynthesizerAgent(BaseAgent):
         return self._llm(prompt, system=_SYNTHESIS_SYSTEM).strip()
 
     def _synthesize_heuristic(
-        self, query: str, results: List[QueryResult]
+        self,
+        query: str,
+        results: List[QueryResult],
+        *,
+        header: str = _NO_LLM_HEADER,
     ) -> str:
         """Fallback: build a structured response without LLM."""
-        parts = [_NO_LLM_HEADER]
+        parts = [header]
 
         for r in results:
             status_note = ""
