@@ -27,3 +27,6 @@ test456.txt
 # frontend build deps
 node_modules/
 frontend/node_modules/
+
+# Local PostgreSQL backups
+ctxflow.dump
