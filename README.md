@@ -318,6 +318,7 @@ export RESEARCHOS_MODEL_PROVIDER=groq       # groq | ollama | nvidia | openroute
 export RESEARCHOS_MODEL_ID=openai/gpt-oss-20b
 export RESEARCHOS_MODEL_TIMEOUT_S=20
 export RESEARCHOS_MAX_RETRIES=2
+export RESEARCHOS_LLM_CLAIM_EXTRACTION=1
 export GROQ_API_KEY=...
 researchos-api
 ```
@@ -333,6 +334,15 @@ A model outage is never fatal. A failed call degrades the answer to the
 deterministic evidence bullets and sets `"status": "degraded"` on the run
 (`success` stays `true`). An invalid API key also trips a circuit breaker after
 the first 401, so ingestion does not retry a dead provider for every node.
+Rate-limit responses are retried after the provider's own hint (for example
+Groq's `try again in 18.4s`), capped at 30 s per attempt.
+
+Free provider tiers cap tokens per minute (Groq's free tier is 8k TPM).
+Reading a batch of fresh abstracts can spend that entire window before the
+answer is written, so set `RESEARCHOS_LLM_CLAIM_EXTRACTION=0` to keep abstract
+claim extraction on the deterministic sentence splitter and reserve the model
+call budget for synthesis and verification. The checked-in demo corpus already
+ships 180 claims, so this only affects newly fetched papers.
 
 ```python
 from researchos.gateway import create_model_gateway

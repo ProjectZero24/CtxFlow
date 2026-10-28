@@ -9,6 +9,7 @@ detection.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 from ctxflow import CtxFlow
@@ -16,6 +17,21 @@ from researchos.agents.base import AgentResult, BaseAgent
 from researchos.skills.paper_reader import PaperReaderSkill
 
 logger = logging.getLogger(__name__)
+
+_FALSEY = frozenset({"0", "false", "no", "off"})
+
+
+def llm_claim_extraction_enabled() -> bool:
+    """Whether abstracts may be sent to the model for claim extraction.
+
+    Free provider tiers cap tokens per minute (Groq's is 8k), and reading a
+    handful of fresh abstracts can consume the whole window before
+    synthesis runs. Set ``RESEARCHOS_LLM_CLAIM_EXTRACTION=0`` to keep claim
+    extraction deterministic and reserve the model for the answer.
+    """
+
+    raw = str(os.environ.get("RESEARCHOS_LLM_CLAIM_EXTRACTION", "")).strip().lower()
+    return raw not in _FALSEY
 
 
 class ReaderAgent(BaseAgent):
@@ -232,7 +248,7 @@ class ReaderAgent(BaseAgent):
         self, abstract: str
     ) -> List[Dict[str, Any]]:
         """Extract claims from an abstract using LLM or heuristics."""
-        if self._llm:
+        if self._llm and llm_claim_extraction_enabled():
             try:
                 from ctxflow.llm_extractor import LLMExtractor
                 extractor = LLMExtractor(llm=self._llm)

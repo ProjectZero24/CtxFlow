@@ -141,6 +141,11 @@ PROVIDER_PRESETS: Dict[str, ProviderPreset] = {
 # documented default; ten is already generous and still bounded.
 _MAX_RETRIES = 10
 
+# Free tiers (for example Groq's 8k tokens-per-minute window) reject a call
+# with a "try again in Ns" hint. Honour the hint, but keep one stalled call
+# from parking the whole run: never sleep longer than this, per attempt.
+_MAX_RETRY_DELAY_S = 30.0
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -434,6 +439,47 @@ def _is_auth_error(exc: BaseException) -> bool:
     return "authentication" in type(exc).__name__.lower()
 
 
+_RETRY_AFTER_SECONDS_RE = re.compile(
+    r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s)\b", re.IGNORECASE
+)
+_RETRY_AFTER_HEADER_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+
+
+def _retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Best-effort rate-limit hint from a provider error, in seconds.
+
+    Providers expose the hint either as a ``retry-after`` header (seconds) or
+    inside the message, e.g. Groq's "Please try again in 18.39s".
+    """
+
+    headers = _get_attr_or_key(getattr(exc, "response", None), "headers")
+    raw = _get_attr_or_key(headers, "retry-after")
+    if raw is None:
+        raw = _get_attr_or_key(headers, "Retry-After")
+    if isinstance(raw, str) and _RETRY_AFTER_HEADER_RE.match(raw.strip()):
+        return max(0.0, float(raw.strip()))
+
+    message = str(exc)
+    match = _RETRY_AFTER_SECONDS_RE.search(message)
+    if not match:
+        return None
+    value = float(match.group(1))
+    if match.group(2).lower() == "ms":
+        value /= 1000.0
+    return max(0.0, value)
+
+
+def _retry_delay(exc: BaseException, attempt: int) -> float:
+    """Backoff for one retry: provider hint when present, else exponential."""
+
+    base = 0.25 * (2 ** attempt)
+    hint = _retry_after_seconds(exc)
+    if hint is None:
+        return min(8.0, base)
+    # A hint shorter than our own backoff is not worth trusting.
+    return min(_MAX_RETRY_DELAY_S, max(base, hint))
+
+
 # ---------------------------------------------------------------------------
 # Gateway
 # ---------------------------------------------------------------------------
@@ -607,7 +653,7 @@ class ModelGateway:
                     ) from exc
 
                 self._record_retry()
-                delay = min(8.0, 0.25 * (2 ** attempt))
+                delay = _retry_delay(exc, attempt)
                 logger.warning(
                     "Model call to %s/%s failed (attempt %d/%d): %s; retrying in %.2fs",
                     self.config.provider,

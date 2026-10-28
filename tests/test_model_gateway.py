@@ -275,6 +275,33 @@ class TestCompletion:
         assert usage["failures"] == 0
         assert sleeps == [0.25, 0.5]
 
+    def test_rate_limit_hint_from_message_is_honoured(self):
+        """Groq free tiers report "try again in 18.4s"; sleeping 0.25s is futile."""
+        error = StatusError(
+            429,
+            "Rate limit reached for model in organization on tokens per minute. "
+            "Please try again in 18.397s.",
+        )
+        gateway, _, sleeps = gateway_with([error, response("ok")])
+
+        assert gateway.complete("prompt") == "ok"
+        assert sleeps == [18.397]
+
+    def test_rate_limit_hint_from_header_is_honoured(self):
+        error = StatusError(429, "slow down")
+        error.response = SimpleNamespace(headers={"retry-after": "2.5"})
+        gateway, _, sleeps = gateway_with([error, response("ok")])
+
+        assert gateway.complete("prompt") == "ok"
+        assert sleeps == [2.5]
+
+    def test_rate_limit_hint_is_capped(self):
+        error = StatusError(429, "Please try again in 300s.")
+        gateway, _, sleeps = gateway_with([error, response("ok")])
+
+        assert gateway.complete("prompt") == "ok"
+        assert sleeps == [30.0]
+
     def test_non_retryable_error_fails_immediately(self):
         gateway, _, sleeps = gateway_with([StatusError(401)])
 

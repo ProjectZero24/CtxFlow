@@ -18,7 +18,10 @@ uvx --version
 $env:GROQ_API_KEY="gsk_..."
 $env:RESEARCHOS_MODEL_ENABLED="1"
 $env:RESEARCHOS_MODEL_PROVIDER="groq"
-$env:RESEARCHOS_MODEL_ID="llama-3.3-70b-versatile"
+$env:RESEARCHOS_MODEL_ID="openai/gpt-oss-120b"
+# Groq's free tier allows 8k tokens/minute. Keep abstract claim extraction
+# deterministic so the model budget goes to the answer.
+$env:RESEARCHOS_LLM_CLAIM_EXTRACTION="0"
 ```
 
 Start the server:
@@ -39,6 +42,7 @@ Open **http://localhost:8000** in your browser.
 | `RESEARCHOS_MCP_ENABLED` | `1` | Set `0` to force the HTTP arXiv provider |
 | `RESEARCHOS_MCP_TIMEOUT` | `60` | Seconds per MCP tool call |
 | `RESEARCHOS_MCP_STARTUP_TIMEOUT` | `180` | First `uvx` start may download the server |
+| `RESEARCHOS_LLM_CLAIM_EXTRACTION` | `1` | Set `0` to keep abstract claim extraction deterministic on token-capped tiers |
 | `RESEARCHOS_DATA_DIR` | `.researchos_data` | Project graphs + run records |
 
 For a fully offline, deterministic demo set
