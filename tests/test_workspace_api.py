@@ -20,11 +20,19 @@ class TestWorkspaceUI:
         response = client.get("/")
         assert response.status_code == 200
         assert "ResearchOS" in response.text
-        assert "/app.js" in response.text
+        # The bundled UI is either the legacy vanilla bundle or the Vite build.
+        assert "/app.js" in response.text or "/assets/" in response.text
 
     def test_static_assets_are_served(self, client):
-        assert client.get("/app.js").status_code == 200
-        assert client.get("/styles.css").status_code == 200
+        import re
+
+        html = client.get("/").text
+        match = re.search(r'(?:src|href)="(/assets/[^"]+\.(?:js|css))"', html)
+        if match:
+            assert client.get(match.group(1)).status_code == 200
+        else:
+            assert client.get("/app.js").status_code == 200
+            assert client.get("/styles.css").status_code == 200
 
 
 class TestNotes:

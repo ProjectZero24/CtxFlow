@@ -162,6 +162,11 @@ class DemoSeedResponse(BaseModel):
     nodes: int = 0
     edges: int = 0
     project_id: str = "default"
+    relations_applied: int = 0
+    relations_already_present: int = 0
+    relations_skipped: int = 0
+    superseded_claims: int = 0
+    contested_claims: int = 0
     message: str = ""
 
 
@@ -240,7 +245,11 @@ class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query.")
     max_results: int = Field(5, description="Max results per provider.")
     provider: str = Field(
-        "both", description="Search provider: arxiv, semantic_scholar, or both."
+        "both",
+        description=(
+            "Search provider: arxiv, semantic_scholar, openalex, or both "
+            "(arxiv + semantic_scholar + openalex)."
+        ),
     )
 
 
@@ -268,6 +277,7 @@ class ProviderOutcomeResponse(BaseModel):
     status_code: Optional[int] = None
     from_cache: bool = False
     elapsed_ms: float = 0.0
+    transport: str = "http"
 
 
 class SearchResponse(BaseModel):

@@ -96,7 +96,9 @@ async def seed_demo(request: DemoSeedRequest) -> DemoSeedResponse:
             message=(
                 f"Demo corpus ready: ingested {stats['papers_ingested']} paper(s) "
                 f"and {stats['claims_ingested']} claim(s); skipped "
-                f"{stats['papers_skipped']} of {total} already present."
+                f"{stats['papers_skipped']} of {total} already present. "
+                f"{stats.get('superseded_claims', 0)} superseded and "
+                f"{stats.get('contested_claims', 0)} contested claim(s)."
             ),
         )
     except Exception as exc:

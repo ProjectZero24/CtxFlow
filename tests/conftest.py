@@ -34,6 +34,12 @@ def isolate_model_environment(monkeypatch):
     for name in MODEL_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
+    # Keep the suite hermetic: no live arXiv/Semantic Scholar/OpenAlex calls and
+    # no ``uvx`` subprocess spawn. Tests that exercise those paths inject a fake
+    # client or a fake provider function.
+    monkeypatch.setenv("RESEARCHOS_EXTERNAL_SEARCH", "off")
+    monkeypatch.setenv("RESEARCHOS_MCP_ENABLED", "0")
+
     try:
         import dotenv
     except ImportError:  # pragma: no cover - dotenv is a core dependency

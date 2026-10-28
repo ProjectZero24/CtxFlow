@@ -1,8 +1,20 @@
-"""Bounded agentic research workflow.
+"""Bounded agentic research workflow with a LangGraph engine.
 
-Stages A–H from the MVP brief. Control flow is ordinary Python (and a
-LangGraph StateGraph when the optional extra is installed). Models only
-fill typed slots; tool calls are allowlisted.
+Eight stages (``STAGES``) implement the MVP brief. The same stage methods back
+two interchangeable engines:
+
+``ResearchWorkflow``
+    Plain sequential Python. Always available; used as the fallback when
+    LangGraph is not installed or ``RESEARCHOS_ORCHESTRATOR=sequential``.
+
+``ResearchGraph``
+    A ``langgraph.graph.StateGraph`` over the same stages, with a checkpointer
+    and a bounded ``verify -> pack`` repair loop. Default when LangGraph is
+    installed.
+
+Models only fill typed slots; tool calls are allowlisted. Both engines return
+the same result dictionary and emit the same event stream, so callers do not
+need to know which one ran (the result records ``engine``).
 """
 
 from __future__ import annotations
@@ -52,8 +64,20 @@ _SYNTHESIS_JSON_SYSTEM = (
 )
 
 
+def _orchestrator_preference() -> str:
+    """Read ``RESEARCHOS_ORCHESTRATOR``: ``langgraph`` (default) or ``sequential``."""
+    import os
+
+    raw = str(os.environ.get("RESEARCHOS_ORCHESTRATOR", "langgraph")).strip().lower()
+    if raw in {"sequential", "python", "off", "legacy"}:
+        return "sequential"
+    return "langgraph"
+
+
 class ResearchWorkflow:
-    """Execute one research run against a project graph."""
+    """Execute one research run against a project graph (sequential engine)."""
+
+    engine = "sequential"
 
     def __init__(
         self,
@@ -65,6 +89,7 @@ class ResearchWorkflow:
         persist: Optional[Callable[[], None]] = None,
         max_wall_s: float = 90.0,
         max_tool_calls: int = 12,
+        max_repairs: int = 1,
     ) -> None:
         self.ctxflow = ctxflow
         self.literature_search = literature_search
@@ -73,7 +98,20 @@ class ResearchWorkflow:
         self.persist = persist
         self.max_wall_s = max_wall_s
         self.max_tool_calls = max_tool_calls
+        self.max_repairs = max(0, int(max_repairs))
 
+        # Per-run state (reset by ``_begin_run``).
+        self._events: List[Dict[str, Any]] = []
+        self._run_id = ""
+        self._on_event: Optional[EventCallback] = None
+        self._cancel_event: Optional[threading.Event] = None
+        self._started_at = 0.0
+        self._retriever: Any = None
+        self._reader: Any = None
+        self._synthesizer: Any = None
+        self._critic: Any = None
+
+    # -- public API ------------------------------------------------------
     def run(
         self,
         query: str,
@@ -84,23 +122,64 @@ class ResearchWorkflow:
         on_event: Optional[EventCallback] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
-        started = time.monotonic()
-        events: List[Dict[str, Any]] = []
+        self._begin_run(run_id, on_event, cancel_event)
+        state = self._initial_state(query, run_id, project_id, token_budget)
 
-        def emit(stage: str, status: str, message: str = "", data: Optional[Dict[str, Any]] = None) -> None:
-            event = make_event(
-                run_id=run_id,
-                stage=stage,
-                status=status,
-                message=message,
-                data=redact_secrets(data or {}),
-            )
-            events.append(event)
-            if on_event is not None:
-                on_event(event)
+        try:
+            for stage in (
+                self._stage_plan,
+                self._stage_retrieve,
+                self._stage_read,
+                self._stage_memory,
+            ):
+                stage(state)
+                if state.get("stop"):
+                    break
 
-        guard = guard_query(query)
-        state: ResearchState = {
+            if not state.get("stop"):
+                while True:
+                    self._stage_pack(state)
+                    if state.get("stop"):
+                        break
+                    self._stage_synthesize(state)
+                    if state.get("stop"):
+                        break
+                    self._stage_verify(state)
+                    if state.get("stop") or not state.get("needs_repair"):
+                        break
+                if not state.get("stop"):
+                    self._stage_persist(state)
+        except Exception as exc:  # noqa: BLE001 — surface as a failed run, never fake success
+            logger.exception("Research workflow failed")
+            state["errors"] = list(state.get("errors") or []) + [str(exc)]
+            state["degraded"] = True
+            self._emit("persist", "failed", str(exc))
+            return self._finalize(state, self._events, success=False, status="failed")
+
+        success, status = self._status_from_state(state)
+        return self._finalize(state, self._events, success=success, status=status)
+
+    # -- run setup -------------------------------------------------------
+    def _begin_run(
+        self,
+        run_id: str,
+        on_event: Optional[EventCallback],
+        cancel_event: Optional[threading.Event],
+    ) -> None:
+        self._run_id = run_id
+        self._on_event = on_event
+        self._cancel_event = cancel_event
+        self._events = []
+        self._started_at = time.monotonic()
+        self._retriever = None
+        self._reader = None
+        self._synthesizer = None
+        self._critic = None
+
+    def _initial_state(
+        self, query: str, run_id: str, project_id: str, token_budget: int
+    ) -> ResearchState:
+        return {
             "run_id": run_id,
             "project_id": project_id,
             "query": query,
@@ -119,17 +198,39 @@ class ResearchWorkflow:
             "cancelled": False,
             "verdict": "",
             "answer": "",
+            "needs_repair": False,
+            "repairs": 0,
+            "max_repairs": self.max_repairs,
+            "stop": False,
+            "stop_status": "",
+            "blocked": False,
+            "engine": self.engine,
         }
 
-        if not guard.allowed:
-            emit("plan", "blocked", guard.reason, guard.to_dict())
-            state["verdict"] = "INSUFFICIENT_EVIDENCE"
-            state["answer"] = guard.reason
-            state["alerts"] = [
-                {"type": "guardrail", "message": guard.reason, **guard.to_dict()}
-            ]
-            return self._finalize(state, events, success=False, status="failed")
+    def _emit(
+        self,
+        stage: str,
+        status: str,
+        message: str = "",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        event = make_event(
+            run_id=self._run_id,
+            stage=stage,
+            status=status,
+            message=message,
+            data=redact_secrets(data or {}),
+        )
+        self._events.append(event)
+        if self._on_event is not None:
+            try:
+                self._on_event(event)
+            except Exception:  # noqa: BLE001 — a listener must not fail the run
+                logger.exception("Event callback failed")
 
+    def _ensure_agents(self, state: ResearchState) -> None:
+        if self._retriever is not None:
+            return
         router = make_router(
             self.ctxflow,
             literature_search=self.literature_search,
@@ -137,229 +238,349 @@ class ResearchWorkflow:
             llm=self.llm,
             token_budget=state["token_budget"],
         )
-        retriever = router._agents["retriever"]
-        reader = router._agents["reader"]
-        synthesizer = router._agents["synthesizer"]
-        critic = router._agents["critic"]
+        self._retriever = router._agents["retriever"]
+        self._reader = router._agents["reader"]
+        self._synthesizer = router._agents["synthesizer"]
+        self._critic = router._agents["critic"]
 
-        try:
-            if self._timed_out(started) or self._cancelled(cancel_event, state, emit):
-                return self._finalize(state, events, success=False, status="cancelled" if state.get("cancelled") else "failed")
-
-            emit("plan", "started", "Classifying intent and building a bounded plan.")
-            intent = classify_intent(query)
-            state["intent"] = intent.value
-            need_external = intent in (
-                QueryIntent.NEW_LITERATURE,
-                QueryIntent.UNKNOWN,
-                QueryIntent.CLAIM_VERIFICATION,
-            )
-            state["need_external"] = need_external
-            emit(
-                "plan",
-                "completed",
-                f"Intent {intent.value}; external retrieval {'enabled' if need_external else 'only if memory is insufficient'}.",
-                {"intent": intent.value, "plan": list(STAGES), "allowed_tools": state["allowed_tools"]},
-            )
-
-            if self._timed_out(started) or self._cancelled(cancel_event, state, emit):
-                return self._finalize(state, events, success=False, status="cancelled" if state.get("cancelled") else "failed")
-
-            emit("retrieve", "started", "Querying project memory.")
-            tool_guard = allow_tool("graph_query")
-            if not tool_guard.allowed:
-                raise RuntimeError(tool_guard.reason)
-            retrieve_result = retriever.run(query=query, max_results=8)
-            retrieve_data = retrieve_result.data or {}
-            state["internal_results"] = retrieve_data.get("internal_results") or []
-            knowledge_gap = bool(retrieve_data.get("knowledge_gap"))
-            external_search = retrieve_data.get("external_search")
-            if not need_external and not knowledge_gap:
-                # Memory is sufficient; skip live literature search even if the
-                # retriever would have searched (it already decided via gap).
-                pass
-            if knowledge_gap:
-                search_guard = allow_tool("literature_search")
-                if not search_guard.allowed:
-                    retrieve_data["external_search"] = {
-                        "status": "error",
-                        "errors": {"guardrail": search_guard.reason},
-                    }
-            state["external_results"] = retrieve_data.get("external_results") or []
-            state["external_search"] = external_search
-            if isinstance(external_search, dict) and external_search.get("status") in {
-                "error",
-                "partial",
-            }:
-                state["degraded"] = True
-            if not retrieve_result.success:
-                state["degraded"] = True
-                state["errors"].append(retrieve_result.error or "retriever failed")
-            emit(
-                "retrieve",
-                "completed" if retrieve_result.success else "degraded",
-                "Memory search finished.",
-                {
-                    "knowledge_gap": knowledge_gap,
-                    "internal_count": len(state["internal_results"]),
-                    "external_count": len(state["external_results"]),
-                    "external_search": external_search,
-                },
-            )
-
-            if self._timed_out(started) or self._cancelled(cancel_event, state, emit):
-                return self._finalize(state, events, success=False, status="cancelled" if state.get("cancelled") else "failed")
-
-            emit("read", "started", "Extracting claims from retrieved papers.")
-            if state["external_results"]:
-                read_guard = allow_tool("paper_reader")
-                if read_guard.allowed:
-                    read_result = reader.run(
-                        query=query,
-                        context={"previous_output": retrieve_data},
-                        previous_results=[retrieve_result],
-                    )
-                    read_data = read_result.data or {}
-                    state["ingested_papers"] = read_data.get("ingested_papers") or []
-                    emit(
-                        "read",
-                        "completed",
-                        f"Ingested {len(state['ingested_papers'])} paper(s).",
-                        {
-                            "ingested_papers": state["ingested_papers"],
-                            "total_nodes_created": read_data.get("total_nodes_created", 0),
-                        },
-                    )
-                else:
-                    emit("read", "blocked", read_guard.reason, read_guard.to_dict())
-            else:
-                emit("read", "skipped", "No new papers to read; using project memory.")
-
-            emit("memory", "started", "Persisting project graph.")
-            if self.persist is not None:
-                self.persist()
-            emit(
-                "memory",
-                "completed",
-                "Project graph saved.",
-                {
-                    "nodes": self.ctxflow.graph.node_count,
-                    "edges": self.ctxflow.graph.edge_count,
-                },
-            )
-
-            if self._timed_out(started) or self._cancelled(cancel_event, state, emit):
-                return self._finalize(state, events, success=False, status="cancelled" if state.get("cancelled") else "failed")
-
-            emit("pack", "started", "Packing evidence into the token budget.")
-            synth_result = synthesizer.run(
-                query=query,
-                context={"token_budget": state["token_budget"]},
-            )
-            synth_data = synth_result.data or {}
-            packed_ids = list(synth_data.get("cited_nodes") or [])
-            state["packed_node_ids"] = packed_ids
-            usage = synth_result.metadata or {}
-            retrieved_n = int(usage.get("nodes_retrieved") or 0)
-            used_n = int(usage.get("nodes_used") or len(packed_ids))
-            state["context_usage"] = {
-                "nodes_retrieved": retrieved_n,
-                "nodes_used": used_n,
-                "nodes_dropped": int(usage.get("nodes_dropped") or max(0, retrieved_n - used_n)),
-                "tokens_used": usage.get("tokens_used"),
-                "token_budget": usage.get("token_budget", state["token_budget"]),
-                "selected_node_ids": packed_ids,
-            }
-            emit(
-                "pack",
-                "completed",
-                "Context packer selected evidence nodes.",
-                state["context_usage"],
-            )
-
-            emit("synthesize", "started", "Generating an evidence-grounded answer.")
-            structured = self._maybe_structured_answer(query, packed_ids)
-            if structured:
-                state["structured"] = structured
-                answer = self._format_structured(structured)
-                cited = [
-                    item
-                    for item in structured.get("citation_ids") or packed_ids
-                    if isinstance(item, str)
-                ]
-                state["answer"] = answer
-                state["cited_nodes"] = cited or packed_ids
-            else:
-                state["answer"] = synth_data.get("answer") or ""
-                state["cited_nodes"] = packed_ids
-                if not synth_result.success:
-                    state["degraded"] = True
-                    state["errors"].append(synth_result.error or "synthesis failed")
-            state["alerts"] = list(synth_data.get("alerts") or [])
-            emit(
-                "synthesize",
-                "completed" if not state.get("degraded") else "degraded",
-                "Answer drafted from packed evidence.",
-                {
-                    "cited_nodes": state["cited_nodes"],
-                    "structured": bool(structured),
-                    "degraded": state.get("degraded"),
-                },
-            )
-
-            emit("verify", "started", "Resolving citations against persisted evidence.")
-            critic_result = critic.run(
-                query=query,
-                context={
-                    "previous_output": {
-                        "answer": state["answer"],
-                        "cited_nodes": state["cited_nodes"],
-                        "alerts": state["alerts"],
-                    },
-                    "packed_node_ids": packed_ids,
-                },
-                previous_results=[synth_result],
-            )
-            critic_data = critic_result.data or {}
-            extra_alerts = self._citation_guard(
-                state["cited_nodes"], packed_ids, self.ctxflow
-            )
-            alerts = list(critic_data.get("alerts") or []) + extra_alerts
-            verdict = str(critic_data.get("verdict") or "INSUFFICIENT_EVIDENCE")
-            if extra_alerts:
-                if any(item.get("type") == "invalid_citation" for item in extra_alerts):
-                    verdict = "WARNINGS_FOUND"
-                if not state["cited_nodes"]:
-                    verdict = "INSUFFICIENT_EVIDENCE"
-            state["verdict"] = verdict
-            state["validations"] = critic_data.get("validations") or []
-            state["alerts"] = alerts
-            emit(
-                "verify",
-                "completed",
-                f"Verification verdict: {verdict}",
-                {
-                    "verdict": verdict,
-                    "validations": state["validations"],
-                    "alerts": alerts,
-                },
-            )
-
-            emit("persist", "started", "Saving the research run.")
-            if self.persist is not None:
-                self.persist()
-            emit("persist", "completed", "Run record ready.")
-        except Exception as exc:  # noqa: BLE001 — surface as a failed run, never fake success
-            logger.exception("Research workflow failed")
-            state["errors"].append(str(exc))
+    # -- stop conditions -------------------------------------------------
+    def _maybe_stop(self, state: ResearchState) -> bool:
+        """Stop the run on cancellation or wall-clock exhaustion."""
+        if state.get("stop"):
+            return True
+        if self._cancelled(self._cancel_event, state, self._emit):
+            state["stop"] = True
+            state["stop_status"] = "cancelled"
+            return True
+        if self._timed_out(self._started_at):
+            state["errors"] = list(state.get("errors") or []) + [
+                f"wall-clock budget of {self.max_wall_s:.0f}s exceeded"
+            ]
             state["degraded"] = True
-            emit("persist", "failed", str(exc))
-            return self._finalize(state, events, success=False, status="failed")
+            state["stop"] = True
+            state["stop_status"] = "failed"
+            self._emit("persist", "failed", "Wall-clock budget exceeded.")
+            return True
+        return False
 
-        success = not state.get("errors")
-        status = "degraded" if state.get("degraded") and success else ("completed" if success else "failed")
-        return self._finalize(state, events, success=success, status=status)
+    # -- stage A: plan ---------------------------------------------------
+    def _stage_plan(self, state: ResearchState) -> ResearchState:
+        guard: GuardVerdict = guard_query(state["query"])
+        state["guard"] = guard.to_dict()
+        if not guard.allowed:
+            self._emit("plan", "blocked", guard.reason, guard.to_dict())
+            state["verdict"] = "INSUFFICIENT_EVIDENCE"
+            state["answer"] = guard.reason
+            state["alerts"] = [
+                {"type": "guardrail", "message": guard.reason, **guard.to_dict()}
+            ]
+            state["blocked"] = True
+            state["stop"] = True
+            state["stop_status"] = "failed"
+            return state
 
+        self._emit("plan", "started", "Classifying intent and building a bounded plan.")
+        intent = classify_intent(state["query"])
+        state["intent"] = intent.value
+        need_external = intent in (
+            QueryIntent.NEW_LITERATURE,
+            QueryIntent.UNKNOWN,
+            QueryIntent.CLAIM_VERIFICATION,
+        )
+        state["need_external"] = need_external
+        self._ensure_agents(state)
+        self._emit(
+            "plan",
+            "completed",
+            f"Intent {intent.value}; external retrieval "
+            f"{'enabled' if need_external else 'only if memory is insufficient'}.",
+            {
+                "intent": intent.value,
+                "plan": list(STAGES),
+                "allowed_tools": state["allowed_tools"],
+                "engine": self.engine,
+            },
+        )
+        self._maybe_stop(state)
+        return state
+
+    # -- stage B: retrieve -----------------------------------------------
+    def _stage_retrieve(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("retrieve", "started", "Querying project memory.")
+        tool_guard = allow_tool("graph_query")
+        if not tool_guard.allowed:
+            raise RuntimeError(tool_guard.reason)
+
+        query = state["query"]
+        retrieve_result = self._retriever.run(query=query, max_results=8)
+        retrieve_data = retrieve_result.data or {}
+        state["internal_results"] = retrieve_data.get("internal_results") or []
+        knowledge_gap = bool(retrieve_data.get("knowledge_gap"))
+        state["knowledge_gap"] = knowledge_gap
+        external_search = retrieve_data.get("external_search")
+
+        if knowledge_gap:
+            search_guard = allow_tool("literature_search")
+            if not search_guard.allowed:
+                external_search = {
+                    "status": "error",
+                    "errors": {"guardrail": search_guard.reason},
+                }
+                retrieve_data["external_search"] = external_search
+
+        state["external_results"] = retrieve_data.get("external_results") or []
+        state["external_search"] = external_search
+        if isinstance(external_search, dict) and external_search.get("status") in {
+            "error",
+            "partial",
+        }:
+            state["degraded"] = True
+        if not retrieve_result.success:
+            state["degraded"] = True
+            state["errors"] = list(state.get("errors") or []) + [
+                retrieve_result.error or "retriever failed"
+            ]
+        self._emit(
+            "retrieve",
+            "completed" if retrieve_result.success else "degraded",
+            "Memory search finished.",
+            {
+                "knowledge_gap": knowledge_gap,
+                "internal_count": len(state["internal_results"]),
+                "external_count": len(state["external_results"]),
+                "external_search": external_search,
+            },
+        )
+        self._maybe_stop(state)
+        return state
+
+    # -- stage C: read ---------------------------------------------------
+    def _stage_read(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("read", "started", "Extracting claims from retrieved papers.")
+        if state["external_results"]:
+            read_guard = allow_tool("paper_reader")
+            if read_guard.allowed:
+                read_result = self._reader.run(
+                    query=state["query"],
+                    context={
+                        "previous_output": {
+                            "internal_results": state["internal_results"],
+                            "external_results": state["external_results"],
+                            "knowledge_gap": state.get("knowledge_gap"),
+                            "external_search": state.get("external_search"),
+                        }
+                    },
+                    previous_results=[],
+                )
+                read_data = read_result.data or {}
+                state["ingested_papers"] = read_data.get("ingested_papers") or []
+                self._emit(
+                    "read",
+                    "completed",
+                    f"Ingested {len(state['ingested_papers'])} paper(s).",
+                    {
+                        "ingested_papers": state["ingested_papers"],
+                        "total_nodes_created": read_data.get("total_nodes_created", 0),
+                    },
+                )
+            else:
+                self._emit("read", "blocked", read_guard.reason, read_guard.to_dict())
+        else:
+            self._emit("read", "skipped", "No new papers to read; using project memory.")
+        return state
+
+    # -- stage D: memory -------------------------------------------------
+    def _stage_memory(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("memory", "started", "Persisting project graph.")
+        if self.persist is not None:
+            self.persist()
+        self._emit(
+            "memory",
+            "completed",
+            "Project graph saved.",
+            {
+                "nodes": self.ctxflow.graph.node_count,
+                "edges": self.ctxflow.graph.edge_count,
+            },
+        )
+        self._maybe_stop(state)
+        return state
+
+    # -- stage E: pack ---------------------------------------------------
+    def _stage_pack(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("pack", "started", "Packing evidence into the token budget.")
+        synth_result = self._synthesizer.run(
+            query=state["query"],
+            context={"token_budget": state["token_budget"]},
+        )
+        synth_data = synth_result.data or {}
+        packed_ids = list(synth_data.get("cited_nodes") or [])
+
+        excluded = set(state.get("excluded_node_ids") or [])
+        if excluded:
+            filtered = [node_id for node_id in packed_ids if node_id not in excluded]
+            if filtered:
+                packed_ids = filtered
+
+        state["packed_node_ids"] = packed_ids
+        state["synthesis_data"] = {
+            "answer": synth_data.get("answer") or "",
+            "alerts": list(synth_data.get("alerts") or []),
+        }
+        state["synthesis_ok"] = bool(synth_result.success)
+        state["synthesis_error"] = synth_result.error or ""
+
+        usage = synth_result.metadata or {}
+        retrieved_n = int(usage.get("nodes_retrieved") or 0)
+        used_n = int(usage.get("nodes_used") or len(packed_ids))
+        state["context_usage"] = {
+            "nodes_retrieved": retrieved_n,
+            "nodes_used": used_n,
+            "nodes_dropped": int(
+                usage.get("nodes_dropped") or max(0, retrieved_n - used_n)
+            ),
+            "tokens_used": usage.get("tokens_used"),
+            "token_budget": usage.get("token_budget", state["token_budget"]),
+            "selected_node_ids": packed_ids,
+            "excluded_node_ids": sorted(excluded),
+        }
+        self._emit(
+            "pack",
+            "completed",
+            "Context packer selected evidence nodes.",
+            state["context_usage"],
+        )
+        self._maybe_stop(state)
+        return state
+
+    # -- stage F: synthesize ---------------------------------------------
+    def _stage_synthesize(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("synthesize", "started", "Generating an evidence-grounded answer.")
+        packed_ids = list(state.get("packed_node_ids") or [])
+        synth_data = state.get("synthesis_data") or {}
+
+        structured = self._maybe_structured_answer(state["query"], packed_ids)
+        if structured:
+            state["structured"] = structured
+            state["answer"] = self._format_structured(structured)
+            cited = [
+                item
+                for item in structured.get("citation_ids") or packed_ids
+                if isinstance(item, str)
+            ]
+            state["cited_nodes"] = cited or packed_ids
+        else:
+            state["answer"] = synth_data.get("answer") or ""
+            state["cited_nodes"] = packed_ids
+            if not state.get("synthesis_ok", True):
+                state["degraded"] = True
+                state["errors"] = list(state.get("errors") or []) + [
+                    state.get("synthesis_error") or "synthesis failed"
+                ]
+        state["alerts"] = list(synth_data.get("alerts") or [])
+        self._emit(
+            "synthesize",
+            "completed" if not state.get("degraded") else "degraded",
+            "Answer drafted from packed evidence.",
+            {
+                "cited_nodes": state["cited_nodes"],
+                "structured": bool(structured),
+                "degraded": state.get("degraded"),
+            },
+        )
+        self._maybe_stop(state)
+        return state
+
+    # -- stage G: verify -------------------------------------------------
+    def _stage_verify(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("verify", "started", "Resolving citations against persisted evidence.")
+        packed_ids = list(state.get("packed_node_ids") or [])
+        critic_result = self._critic.run(
+            query=state["query"],
+            context={
+                "previous_output": {
+                    "answer": state["answer"],
+                    "cited_nodes": state["cited_nodes"],
+                    "alerts": state["alerts"],
+                },
+                "packed_node_ids": packed_ids,
+            },
+            previous_results=[],
+        )
+        critic_data = critic_result.data or {}
+        extra_alerts = self._citation_guard(
+            state["cited_nodes"], packed_ids, self.ctxflow
+        )
+        alerts = list(critic_data.get("alerts") or []) + extra_alerts
+        verdict = str(critic_data.get("verdict") or "INSUFFICIENT_EVIDENCE")
+        if extra_alerts:
+            if any(item.get("type") == "invalid_citation" for item in extra_alerts):
+                verdict = "WARNINGS_FOUND"
+            if not state["cited_nodes"]:
+                verdict = "INSUFFICIENT_EVIDENCE"
+        state["verdict"] = verdict
+        state["validations"] = critic_data.get("validations") or []
+        state["alerts"] = alerts
+
+        # Repair: only when the verifier found citations that can actually be
+        # excluded from the pack. This keeps the loop bounded and corrective
+        # (a plain re-run with identical input would change nothing).
+        repairs = int(state.get("repairs") or 0)
+        max_repairs = int(state.get("max_repairs") or 0)
+        flagged = {
+            item.get("node_id")
+            for item in alerts
+            if item.get("type") in {"invalid_citation", "superseded"}
+            and item.get("node_id")
+        }
+        already_excluded = set(state.get("excluded_node_ids") or [])
+        new_exclusions = flagged - already_excluded
+        needs_repair = bool(
+            verdict == "WARNINGS_FOUND" and new_exclusions and repairs < max_repairs
+        )
+        if needs_repair:
+            state["excluded_node_ids"] = sorted(already_excluded | new_exclusions)
+            state["repairs"] = repairs + 1
+        state["needs_repair"] = needs_repair
+
+        self._emit(
+            "verify",
+            "completed",
+            f"Verification verdict: {verdict}",
+            {
+                "verdict": verdict,
+                "validations": state["validations"],
+                "alerts": alerts,
+                "repair": needs_repair,
+                "repair_attempt": state.get("repairs", 0),
+            },
+        )
+        self._maybe_stop(state)
+        return state
+
+    # -- stage H: persist ------------------------------------------------
+    def _stage_persist(self, state: ResearchState) -> ResearchState:
+        if state.get("stop"):
+            return state
+        self._emit("persist", "started", "Saving the research run.")
+        if self.persist is not None:
+            self.persist()
+        self._emit("persist", "completed", "Run record ready.")
+        return state
+
+    # -- synthesis helpers ----------------------------------------------
     def _maybe_structured_answer(
         self, query: str, packed_ids: List[str]
     ) -> Optional[Dict[str, Any]]:
@@ -468,6 +689,7 @@ class ResearchWorkflow:
                 )
         return alerts
 
+    # -- shared utilities ------------------------------------------------
     def _timed_out(self, started: float) -> bool:
         return (time.monotonic() - started) > self.max_wall_s
 
@@ -475,13 +697,23 @@ class ResearchWorkflow:
     def _cancelled(
         cancel_event: Optional[threading.Event],
         state: ResearchState,
-        emit: EventCallback,
+        emit: Callable[..., None],
     ) -> bool:
         if cancel_event is not None and cancel_event.is_set():
             state["cancelled"] = True
             emit("persist", "cancelled", "Run cancelled.")
             return True
         return False
+
+    @staticmethod
+    def _status_from_state(state: ResearchState) -> tuple[bool, str]:
+        if state.get("stop"):
+            return False, str(state.get("stop_status") or "failed")
+        if state.get("errors"):
+            return False, "failed"
+        if state.get("degraded"):
+            return True, "degraded"
+        return True, "completed"
 
     def _finalize(
         self,
@@ -497,6 +729,7 @@ class ResearchWorkflow:
             "query": state.get("query"),
             "status": status,
             "success": success,
+            "engine": state.get("engine") or self.engine,
             "intent": state.get("intent"),
             "plan": state.get("plan"),
             "stage": events[-1]["stage"] if events else "plan",
@@ -512,10 +745,207 @@ class ResearchWorkflow:
             "structured": state.get("structured") or {},
             "errors": state.get("errors") or [],
             "degraded": bool(state.get("degraded")),
+            "repairs": int(state.get("repairs") or 0),
+            "excluded_node_ids": state.get("excluded_node_ids") or [],
             "events": events,
             "graph_nodes": self.ctxflow.graph.node_count,
             "graph_edges": self.ctxflow.graph.edge_count,
         }
+
+
+class ResearchGraph(ResearchWorkflow):
+    """LangGraph ``StateGraph`` engine over the shared eight stages.
+
+    The graph adds three things the sequential loop cannot express directly:
+
+    * an explicit node/edge topology (inspectable and checkpointed),
+    * a ``verify -> pack`` conditional edge for bounded repair, and
+    * a checkpointer keyed by ``run_id`` (``thread_id``), so the final state of
+      any run can be inspected after the fact.
+
+    It returns exactly the same result dictionary and emits exactly the same
+    events as :class:`ResearchWorkflow`.
+    """
+
+    engine = "langgraph"
+
+    def __init__(
+        self,
+        ctxflow: CtxFlow,
+        *,
+        literature_search: Optional[LiteratureSearchSkill] = None,
+        paper_reader: Optional[PaperReaderSkill] = None,
+        llm: Any = None,
+        persist: Optional[Callable[[], None]] = None,
+        max_wall_s: float = 90.0,
+        max_tool_calls: int = 12,
+        max_repairs: int = 1,
+        checkpointer: Any = None,
+    ) -> None:
+        super().__init__(
+            ctxflow,
+            literature_search=literature_search,
+            paper_reader=paper_reader,
+            llm=llm,
+            persist=persist,
+            max_wall_s=max_wall_s,
+            max_tool_calls=max_tool_calls,
+            max_repairs=max_repairs,
+        )
+        self._checkpointer = checkpointer
+        self._compiled: Any = None
+
+    # -- graph construction ---------------------------------------------
+    def _make_checkpointer(self) -> Any:
+        if self._checkpointer is not None:
+            return self._checkpointer
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+
+            self._checkpointer = MemorySaver()
+        except ImportError:  # pragma: no cover - older/newer layouts
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            self._checkpointer = InMemorySaver()
+        return self._checkpointer
+
+    def _build(self) -> Any:
+        if self._compiled is not None:
+            return self._compiled
+
+        from langgraph.graph import END, START, StateGraph
+
+        graph: Any = StateGraph(ResearchState)
+        graph.add_node("plan", self._node(self._stage_plan))
+        graph.add_node("retrieve", self._node(self._stage_retrieve))
+        graph.add_node("read", self._node(self._stage_read))
+        graph.add_node("memory", self._node(self._stage_memory))
+        graph.add_node("pack", self._node(self._stage_pack))
+        graph.add_node("synthesize", self._node(self._stage_synthesize))
+        graph.add_node("verify", self._node(self._stage_verify))
+        graph.add_node("persist", self._node(self._stage_persist))
+
+        graph.add_edge(START, "plan")
+        graph.add_conditional_edges(
+            "plan", self._route_after_plan, {"retrieve": "retrieve", END: END}
+        )
+        graph.add_conditional_edges(
+            "retrieve", self._route_after_retrieve, {"read": "read", END: END}
+        )
+        graph.add_conditional_edges(
+            "read", self._route_after_read, {"memory": "memory", END: END}
+        )
+        graph.add_conditional_edges(
+            "memory", self._route_after_memory, {"pack": "pack", END: END}
+        )
+        graph.add_conditional_edges(
+            "pack", self._route_after_pack, {"synthesize": "synthesize", END: END}
+        )
+        graph.add_conditional_edges(
+            "synthesize",
+            self._route_after_synthesize,
+            {"verify": "verify", END: END},
+        )
+        graph.add_conditional_edges(
+            "verify",
+            self._route_after_verify,
+            {"pack": "pack", "persist": "persist", END: END},
+        )
+        graph.add_edge("persist", END)
+
+        self._compiled = graph.compile(checkpointer=self._make_checkpointer())
+        return self._compiled
+
+    def _node(self, stage: Callable[[ResearchState], ResearchState]) -> Callable[[ResearchState], ResearchState]:
+        def run_stage(state: ResearchState) -> ResearchState:
+            return stage(state)
+
+        return run_stage
+
+    @staticmethod
+    def _stopped(state: ResearchState) -> bool:
+        return bool(state.get("stop"))
+
+    @staticmethod
+    def _end() -> str:
+        # Imported lazily so importing this module never requires LangGraph.
+        from langgraph.graph import END
+
+        return END
+
+    def _route_after_plan(self, state: ResearchState) -> str:
+        return self._end() if self._stopped(state) else "retrieve"
+
+    def _route_after_retrieve(self, state: ResearchState) -> str:
+        return self._end() if self._stopped(state) else "read"
+
+    def _route_after_read(self, state: ResearchState) -> str:
+        return self._end() if self._stopped(state) else "memory"
+
+    def _route_after_memory(self, state: ResearchState) -> str:
+        return self._end() if self._stopped(state) else "pack"
+
+    def _route_after_pack(self, state: ResearchState) -> str:
+        return self._end() if self._stopped(state) else "synthesize"
+
+    def _route_after_synthesize(self, state: ResearchState) -> str:
+        return self._end() if self._stopped(state) else "verify"
+
+    def _route_after_verify(self, state: ResearchState) -> str:
+        if self._stopped(state):
+            return self._end()
+        if state.get("needs_repair"):
+            return "pack"
+        return "persist"
+
+    # -- execution -------------------------------------------------------
+    def run(
+        self,
+        query: str,
+        *,
+        run_id: str,
+        project_id: str = "default",
+        token_budget: int = 2048,
+        on_event: Optional[EventCallback] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Dict[str, Any]:
+        self._begin_run(run_id, on_event, cancel_event)
+        state = self._initial_state(query, run_id, project_id, token_budget)
+        config = {
+            "configurable": {"thread_id": run_id},
+            "recursion_limit": 50,
+        }
+
+        try:
+            compiled = self._build()
+            final_state = compiled.invoke(state, config=config)
+        except Exception as exc:  # noqa: BLE001 — never report a crash as success
+            logger.exception("LangGraph research run failed")
+            recovered: ResearchState = dict(state)
+            try:
+                snapshot = compiled.get_state(config)
+                if snapshot and snapshot.values:
+                    recovered = dict(snapshot.values)
+            except Exception:  # noqa: BLE001 - best effort recovery
+                pass
+            recovered["engine"] = self.engine
+            recovered["errors"] = list(recovered.get("errors") or []) + [str(exc)]
+            recovered["degraded"] = True
+            self._emit("persist", "failed", str(exc))
+            return self._finalize(
+                recovered, self._events, success=False, status="failed"
+            )
+
+        success, status = self._status_from_state(final_state)
+        return self._finalize(final_state, self._events, success=success, status=status)
+
+    def get_state(self, run_id: str) -> Any:
+        """Return the checkpoint snapshot for ``run_id`` (None before a run)."""
+        compiled = self._build()
+        try:
+            return compiled.get_state({"configurable": {"thread_id": run_id}})
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def maybe_langgraph_available() -> bool:
@@ -524,3 +954,35 @@ def maybe_langgraph_available() -> bool:
     except ImportError:
         return False
     return True
+
+
+def build_orchestrator(
+    ctxflow: CtxFlow,
+    *,
+    literature_search: Optional[LiteratureSearchSkill] = None,
+    paper_reader: Optional[PaperReaderSkill] = None,
+    llm: Any = None,
+    persist: Optional[Callable[[], None]] = None,
+    max_wall_s: float = 90.0,
+    max_tool_calls: int = 12,
+    max_repairs: int = 1,
+    checkpointer: Any = None,
+) -> ResearchWorkflow:
+    """Return the preferred orchestrator for this process.
+
+    ``RESEARCHOS_ORCHESTRATOR=sequential`` forces the plain loop. Otherwise
+    LangGraph is used when importable, falling back to the loop when it is not.
+    Tests and embedders can also pass an explicit checkpointer.
+    """
+    kwargs = {
+        "literature_search": literature_search,
+        "paper_reader": paper_reader,
+        "llm": llm,
+        "persist": persist,
+        "max_wall_s": max_wall_s,
+        "max_tool_calls": max_tool_calls,
+        "max_repairs": max_repairs,
+    }
+    if _orchestrator_preference() == "langgraph" and maybe_langgraph_available():
+        return ResearchGraph(ctxflow, checkpointer=checkpointer, **kwargs)
+    return ResearchWorkflow(ctxflow, **kwargs)

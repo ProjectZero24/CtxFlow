@@ -1,10 +1,15 @@
 """Curated, offline demo corpus for the ResearchOS workspace.
 
 The corpus contains real arXiv metadata (titles, authors, abstracts, IDs) so a
-demo can populate the graph without depending on a live search provider. The
-seed function uses the same ingest path as ``POST /api/papers/ingest``: one
-paper node plus one claim node per abstract sentence, linked with an
-``extracted_from`` edge.
+demo can populate the graph without depending on a live search provider. Four
+entries are clearly-marked synthetic benchmark reports that carry a curated
+supersession/contradiction scenario; they exist so the demo can show correction
+propagation and contested claims without pretending a model detected them.
+
+Seed uses the same ingest path as ``POST /api/papers/ingest``: one paper node
+plus one claim node per abstract sentence, linked with an ``extracted_from``
+edge. Curated relations from ``relations.json`` are applied after ingestion,
+producing real ``supersedes``/``contradicts`` edges and status transitions.
 """
 
 from __future__ import annotations
@@ -12,13 +17,16 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ctxflow import CtxFlow
+from ctxflow.models import Edge, Node, NodeStatus
 
-_CORPUS_PATH = Path(__file__).with_name("corpus.json")
+_HERE = Path(__file__).parent
+_CORPUS_PATH = _HERE / "corpus.json"
+_RELATIONS_PATH = _HERE / "relations.json"
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
-_MAX_CLAIMS_PER_PAPER = 8
+_MAX_CLAIMS_PER_PAPER = 12
 
 
 def load_corpus(path: Path | None = None) -> List[Dict[str, Any]]:
@@ -33,15 +41,45 @@ def load_corpus(path: Path | None = None) -> List[Dict[str, Any]]:
     return papers
 
 
-def _existing_arxiv_ids(ctxflow: CtxFlow) -> set[str]:
-    ids: set[str] = set()
+def load_relations(path: Path | None = None) -> List[Dict[str, Any]]:
+    """Load the curated demo relations (supersedes / contradicts)."""
+    relations_path = path or _RELATIONS_PATH
+    if not relations_path.exists():
+        return []
+    with relations_path.open("r", encoding="utf-8") as handle:
+        relations = json.load(handle)
+    if not isinstance(relations, list):
+        raise ValueError("demo relations must be a JSON array")
+    return relations
+
+
+def _paper_keys(node: Node) -> set[str]:
+    metadata = node.metadata or {}
+    keys: set[str] = set()
+    for field in ("arxiv_id", "demo_id"):
+        value = metadata.get(field)
+        if value:
+            keys.add(str(value).strip().lower())
+    title = str(metadata.get("title") or "").strip().lower()
+    if title:
+        keys.add(f"title:{title}")
+    return keys
+
+
+def _existing_paper_keys(ctxflow: CtxFlow) -> set[str]:
+    keys: set[str] = set()
     for node in ctxflow.graph.all_nodes():
-        if node.node_type != "paper":
-            continue
-        arxiv_id = (node.metadata or {}).get("arxiv_id")
-        if arxiv_id:
-            ids.add(str(arxiv_id))
-    return ids
+        if node.node_type == "paper":
+            keys |= _paper_keys(node)
+    return keys
+
+
+def _record_key(record: Dict[str, Any]) -> str:
+    for field in ("arxiv_id", "demo_id"):
+        value = str(record.get(field) or "").strip().lower()
+        if value:
+            return value
+    return f"title:{str(record.get('title') or '').strip().lower()}"
 
 
 def _claim_sentences(abstract: str) -> List[str]:
@@ -55,29 +93,146 @@ def _claim_sentences(abstract: str) -> List[str]:
     return sentences
 
 
+def _find_paper(ctxflow: CtxFlow, selector: Dict[str, Any]) -> Optional[Node]:
+    demo_id = str(selector.get("demo_id") or "").strip().lower()
+    arxiv_id = str(selector.get("arxiv_id") or "").strip().lower()
+    for node in ctxflow.graph.all_nodes():
+        if node.node_type != "paper":
+            continue
+        metadata = node.metadata or {}
+        if demo_id and str(metadata.get("demo_id") or "").strip().lower() == demo_id:
+            return node
+        if arxiv_id and str(metadata.get("arxiv_id") or "").strip().lower() == arxiv_id:
+            return node
+    return None
+
+
+def _find_claim(
+    ctxflow: CtxFlow, paper_id: str, contains: str
+) -> Optional[Node]:
+    needle = " ".join((contains or "").split()).lower()
+    if not needle:
+        return None
+    for node in ctxflow.graph.all_nodes():
+        if node.node_type != "claim":
+            continue
+        metadata = node.metadata or {}
+        if metadata.get("source_paper_node_id") != paper_id:
+            continue
+        if needle in " ".join(node.content.split()).lower():
+            return node
+    return None
+
+
+def apply_curated_relations(
+    ctxflow: CtxFlow, relations: List[Dict[str, Any]] | None = None
+) -> Dict[str, Any]:
+    """Apply curated supersedes/contradicts edges to an ingested corpus.
+
+    Idempotent: an existing edge between the same pair and relation is not
+    duplicated, and status transitions are only counted the first time.
+    """
+    relations = relations if relations is not None else load_relations()
+    applied = 0
+    already = 0
+    skipped = 0
+    applied_relations: List[Dict[str, Any]] = []
+
+    for item in relations:
+        old_paper = _find_paper(ctxflow, item.get("old") or {})
+        new_paper = _find_paper(ctxflow, item.get("new") or {})
+        if old_paper is None or new_paper is None:
+            skipped += 1
+            continue
+
+        old_claim = _find_claim(
+            ctxflow, old_paper.id, str((item.get("old") or {}).get("claim_contains") or "")
+        )
+        new_claim = _find_claim(
+            ctxflow, new_paper.id, str((item.get("new") or {}).get("claim_contains") or "")
+        )
+        if old_claim is None or new_claim is None:
+            skipped += 1
+            continue
+
+        relation = str(item.get("relation") or "supersedes")
+        if relation not in {"supersedes", "contradicts"}:
+            skipped += 1
+            continue
+
+        existing = [
+            edge
+            for edge in ctxflow.graph.get_edges_from(new_claim.id)
+            if edge.target_id == old_claim.id and edge.relation_type == relation
+        ]
+        if existing:
+            already += 1
+            continue
+
+        confidence = float(item.get("confidence") or 0.0)
+        ctxflow.graph.add_edge(
+            Edge(
+                source_id=new_claim.id,
+                target_id=old_claim.id,
+                relation_type=relation,
+                weight=confidence,
+                metadata={
+                    "confidence": confidence,
+                    "evidence": str(item.get("rationale") or ""),
+                    "scenario": str(item.get("scenario") or ""),
+                    "curated": True,
+                },
+            )
+        )
+        if relation == "supersedes":
+            old_claim.status = NodeStatus.SUPERSEDED
+            old_claim.superseded_by = new_claim.id
+        else:
+            old_claim.status = NodeStatus.CONTESTED
+
+        applied += 1
+        applied_relations.append(
+            {
+                "scenario": str(item.get("scenario") or ""),
+                "relation": relation,
+                "confidence": confidence,
+                "old_claim_id": old_claim.id,
+                "new_claim_id": new_claim.id,
+            }
+        )
+
+    return {
+        "relations_applied": applied,
+        "relations_already_present": already,
+        "relations_skipped": skipped,
+        "applied_relations": applied_relations,
+    }
+
+
 def seed_demo_corpus(
     ctxflow: CtxFlow,
     *,
     project_id: str = "default",
     papers: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
-    """Ingest the demo corpus into ``ctxflow`` (idempotent per arXiv ID)."""
+    """Ingest the demo corpus into ``ctxflow`` (idempotent per arXiv/demo ID)."""
     records = papers if papers is not None else load_corpus()
-    existing = _existing_arxiv_ids(ctxflow)
+    existing = _existing_paper_keys(ctxflow)
 
     papers_ingested = 0
     claims_ingested = 0
     skipped = 0
     for record in records:
-        arxiv_id = str(record.get("arxiv_id") or "").strip()
+        key = _record_key(record)
         title = str(record.get("title") or "").strip()
         if not title:
             skipped += 1
             continue
-        if arxiv_id and arxiv_id in existing:
+        if key in existing:
             skipped += 1
             continue
 
+        arxiv_id = str(record.get("arxiv_id") or "").strip()
         authors = list(record.get("authors") or [])
         year = record.get("year")
         url = str(record.get("url") or "")
@@ -90,6 +245,13 @@ def seed_demo_corpus(
             "url": url,
             "demo_corpus": True,
         }
+        demo_id = str(record.get("demo_id") or "").strip()
+        if demo_id:
+            metadata["demo_id"] = demo_id
+        if record.get("synthetic"):
+            metadata["synthetic"] = True
+            metadata["scenario"] = str(record.get("scenario") or "")
+
         paper_content = f"Paper: {title}"
         if authors:
             paper_content += f"\nAuthors: {', '.join(authors[:5])}"
@@ -124,8 +286,9 @@ def seed_demo_corpus(
             )
             claims_ingested += 1
 
-        if arxiv_id:
-            existing.add(arxiv_id)
+        existing.add(key)
+
+    relation_stats = apply_curated_relations(ctxflow)
 
     return {
         "papers_ingested": papers_ingested,
@@ -134,4 +297,15 @@ def seed_demo_corpus(
         "project_id": project_id,
         "nodes": ctxflow.graph.node_count,
         "edges": ctxflow.graph.edge_count,
+        "superseded_claims": sum(
+            1
+            for node in ctxflow.graph.all_nodes()
+            if node.status == NodeStatus.SUPERSEDED
+        ),
+        "contested_claims": sum(
+            1
+            for node in ctxflow.graph.all_nodes()
+            if node.status == NodeStatus.CONTESTED
+        ),
+        **relation_stats,
     }

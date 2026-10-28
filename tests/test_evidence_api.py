@@ -256,7 +256,8 @@ class FailingSearchSkill:
 
 
 class TestRetrieverFailureSemantics:
-    def test_total_provider_failure_is_a_failed_retrieval(self):
+    def test_total_provider_failure_is_a_failed_retrieval(self, monkeypatch):
+        monkeypatch.setenv("RESEARCHOS_EXTERNAL_SEARCH", "force")
         retriever = RetrieverAgent(
             ctxflow=CtxFlow(),
             literature_search=FailingSearchSkill(error_outcome()),
@@ -269,7 +270,8 @@ class TestRetrieverFailureSemantics:
         assert result.metadata["degraded"] is True
         assert result.metadata["external_search_status"] == "error"
 
-    def test_partial_failure_stays_successful_but_degraded(self):
+    def test_partial_failure_stays_successful_but_degraded(self, monkeypatch):
+        monkeypatch.setenv("RESEARCHOS_EXTERNAL_SEARCH", "force")
         outcome = SearchOutcome(
             query="attention",
             provider="both",

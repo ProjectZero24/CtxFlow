@@ -242,7 +242,7 @@ harness with two flat-RAG baselines.
 ### Install and run
 
 ```bash
-pip install -e ".[researchos]"
+pip install -e ".[researchos,orchestration,mcp]"
 researchos-api
 # or: python -m researchos.api.main
 ```
@@ -267,6 +267,41 @@ The UI is dependency-free (vanilla JS/SVG) and ships inside the wheel, so
 it needs no npm build. Clicking a citation or graph node opens the
 Research Trace panel: provenance chain, superseded claims, contradictions,
 and source papers.
+
+### Orchestration (LangGraph) and arXiv MCP
+
+The eight-stage research loop (`plan → retrieve → read → memory → pack →
+synthesize → verify → persist`) runs on a **LangGraph `StateGraph`** by default,
+with a plain sequential fallback:
+
+```bash
+export RESEARCHOS_ORCHESTRATOR=langgraph   # or "sequential"
+```
+
+The graph adds explicit node/edge topology, a `MemorySaver` checkpointer keyed
+by `run_id`, and a bounded `verify → pack` repair edge that removes citations
+the critic flags and re-packs once. Both engines return the same result
+dictionary and SSE events; the result and `done` event include
+`"engine": "langgraph" | "sequential"`.
+
+arXiv search goes through **`uvx arxiv-mcp-server`** over MCP when available:
+
+```bash
+uvx --version                                  # ships with uv
+export RESEARCHOS_MCP_ENABLED=1                # default
+export RESEARCHOS_MCP_TIMEOUT=60               # per tool call
+export RESEARCHOS_EXTERNAL_SEARCH=auto         # auto | force | off
+```
+
+A missing `uvx`, a protocol error, or a rate limit is not fatal: the skill
+retries the same query against the plain arXiv HTTP API, records
+`transport: "http"` and `last_mcp_error`, and the run is marked degraded rather
+than failed. `LiteratureSearchSkill.transport_stats` exposes
+`mcp_calls` / `http_fallbacks` / `last_mcp_error` for the demo.
+
+The checked-in demo corpus (`src/researchos/demo/corpus.json`) is **22 real
+arXiv papers** with curated `supersedes` / `contradicts` relations between real
+claims; `POST /api/demo/seed` is idempotent per arXiv ID.
 
 ### Model consumption
 
@@ -330,8 +365,13 @@ outcome = skill.search_with_outcome("graph neural networks", provider="both")
 outcome.status          # ok | empty | partial | error
 outcome.results         # deduplicated list[PaperResult]
 outcome.errors          # {"semantic_scholar": "HTTPError: 429 ..."}
-outcome.to_dict()       # per-provider status, error type, cache/latency info
+outcome.to_dict()       # per-provider status, error type, cache/latency/transport
 ```
+
+`provider="both"` queries arXiv, Semantic Scholar, and the keyless OpenAlex API;
+pass `"arxiv"`, `"semantic_scholar"`, or `"openalex"` to narrow it. Each
+per-provider entry reports `transport` (`mcp` or `http` for arXiv), so a demo
+can show that the MCP server actually served the query.
 
 `RetrieverAgent` exposes the same payload as
 `data["external_search"]` and mirrors the status in its metadata, so an

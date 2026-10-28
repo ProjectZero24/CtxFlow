@@ -54,7 +54,7 @@ from researchos.api.schemas import (
     SkillListResponse,
 )
 from researchos.gateway import ModelGateway, create_model_gateway
-from researchos.orchestration.workflow import ResearchWorkflow
+from researchos.orchestration.workflow import build_orchestrator
 from researchos.persistence import ResearchWorkspace, new_run_id
 from researchos.pipeline import make_router, redact_secrets
 from researchos.skills.graph_query import GraphQuerySkill
@@ -148,7 +148,23 @@ def create_app(
             )
 
         # 2. Initialize Skills
-        lit_search = LiteratureSearchSkill()
+        #    arXiv search goes through the MCP server (``uvx arxiv-mcp-server``)
+        #    when available; LiteratureSearchSkill falls back to the HTTP API
+        #    on any MCP failure so the demo still works offline.
+        arxiv_mcp = None
+        try:
+            from researchos.mcp import ArxivMCPClient
+            from researchos.mcp.arxiv import mcp_enabled
+
+            if mcp_enabled():
+                arxiv_mcp = ArxivMCPClient()
+                logger.info("arXiv MCP client enabled (uvx arxiv-mcp-server)")
+        except Exception as exc:  # noqa: BLE001 — MCP is optional
+            logger.warning("arXiv MCP client unavailable: %s", exc)
+            arxiv_mcp = None
+        state["arxiv_mcp"] = arxiv_mcp
+
+        lit_search = LiteratureSearchSkill(arxiv_client=arxiv_mcp)
         paper_reader = PaperReaderSkill(llm=llm)
         graph_query = GraphQuerySkill(ctxflow)
         review_writer = ReviewWriterSkill(ctxflow, llm=llm)
@@ -173,7 +189,12 @@ def create_app(
                         "max_results": {"type": "integer", "minimum": 1},
                         "provider": {
                             "type": "string",
-                            "enum": ["arxiv", "semantic_scholar", "both"],
+                            "enum": [
+                                "arxiv",
+                                "semantic_scholar",
+                                "openalex",
+                                "both",
+                            ],
                         },
                     },
                     "required": ["query"],
@@ -287,6 +308,11 @@ def create_app(
             lit_search.close()
         except Exception:
             pass
+        try:
+            if state.get("arxiv_mcp") is not None:
+                state["arxiv_mcp"].close()
+        except Exception:
+            pass
         if owns_gateway and gateway is not None:
             gateway.close()
 
@@ -382,8 +408,10 @@ def create_app(
         token_budget: int = 2048,
         project_id: str = "default",
     ):
-        """SSE streaming endpoint — NEW 8-stage ResearchWorkflow execution.
+        """SSE streaming endpoint — 8-stage research execution.
 
+        Runs on the LangGraph orchestrator by default (unless
+        ``RESEARCHOS_ORCHESTRATOR=sequential`` or LangGraph is unavailable).
         Each event carries: event=stage_name, data=JSON with
         {run_id, stage, status, message, ts, data}.
         The final event is event=done with the full run record.
@@ -402,8 +430,8 @@ def create_app(
         def _save_graph() -> None:
             ws.save_graph(project_id)
 
-        workflow = ResearchWorkflow(
-            ctxflow=project_graph,
+        workflow = build_orchestrator(
+            project_graph,
             literature_search=lit_search,
             paper_reader=paper_reader_skill,
             llm=gw,
@@ -443,6 +471,7 @@ def create_app(
                     "run_id": run_id,
                     "query": query,
                     "project_id": project_id,
+                    "engine": getattr(workflow, "engine", "sequential"),
                     "message": "Workflow started",
                 }),
             }
@@ -490,6 +519,7 @@ def create_app(
                     "run_id": run_id,
                     "status": result.get("status", "unknown"),
                     "success": result.get("success", False),
+                    "engine": result.get("engine", getattr(workflow, "engine", "sequential")),
                     "answer": result.get("answer", ""),
                     "verdict": result.get("verdict", ""),
                     "cited_nodes": result.get("cited_nodes", []),

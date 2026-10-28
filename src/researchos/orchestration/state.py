@@ -38,6 +38,7 @@ class ResearchState(TypedDict, total=False):
     internal_results: List[Dict[str, Any]]
     external_results: List[Dict[str, Any]]
     external_search: Optional[Dict[str, Any]]
+    knowledge_gap: bool
     ingested_papers: List[Dict[str, Any]]
     packed_node_ids: List[str]
     excluded_node_ids: List[str]
@@ -52,6 +53,19 @@ class ResearchState(TypedDict, total=False):
     degraded: bool
     cancelled: bool
     trace: List[Dict[str, Any]]
+    # -- engine control --------------------------------------------------
+    engine: str
+    stop: bool
+    stop_status: str
+    blocked: bool
+    needs_repair: bool
+    repairs: int
+    max_repairs: int
+    guard: Dict[str, Any]
+    # -- carried between pack and synthesize -----------------------------
+    synthesis_data: Dict[str, Any]
+    synthesis_ok: bool
+    synthesis_error: str
 
 
 def now_ts() -> float:

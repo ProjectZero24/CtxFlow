@@ -301,12 +301,28 @@ class CtxFlow:
         # Classify nodes in the chain.
         superseded: List[Node] = []
         source_papers: List[Node] = []
+        seen_superseded = set()
 
         for step in chain.steps:
             if step.node.status == NodeStatus.SUPERSEDED:
-                superseded.append(step.node)
+                if step.node.id not in seen_superseded:
+                    superseded.append(step.node)
+                    seen_superseded.add(step.node.id)
             if step.node.node_type in ("paper", "reference", "source"):
                 source_papers.append(step.node)
+
+        # A claim that *supersedes* an older claim must surface the older node
+        # even though it is not part of the backward provenance chain. The
+        # traced node itself is included because the chain only walks parents.
+        sources = {node_id} | {step.node.id for step in chain.steps}
+        for source_id in sources:
+            for edge in self._graph.get_edges_from(source_id):
+                if edge.relation_type != "supersedes":
+                    continue
+                target = self._graph.get_node(edge.target_id)
+                if target is not None and target.id not in seen_superseded:
+                    superseded.append(target)
+                    seen_superseded.add(target.id)
 
         return ResearchTrace(
             answer_node_id=node_id,
