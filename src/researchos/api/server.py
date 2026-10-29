@@ -45,6 +45,7 @@ from researchos.skills.literature_search import LiteratureSearchSkill
 from researchos.skills.paper_reader import PaperReaderSkill
 from researchos.skills.registry import SkillRegistry
 from researchos.skills.review_writer import ReviewWriterSkill
+from researchos.memory.context import create_context_provider
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ def create_app(
     ctxflow: Optional[CtxFlow] = None,
     skill_registry: Optional[SkillRegistry] = None,
     router_agent: Optional[SkillRouter] = None,
+    memory_store: Any | None = None,
     enable_cors: bool = True,
     model_gateway: Optional[ModelGateway] = None,
 ) -> FastAPI:
@@ -87,6 +89,11 @@ def create_app(
         if ctxflow is None:
             ctxflow = CtxFlow()
         state["ctxflow"] = ctxflow
+        if memory_store is not None:
+            provider = create_context_provider(memory_store)
+            if provider is not None:
+                state["context_provider"] = provider
+                app.state.context_provider = provider
 
         # 1b. Resolve the optional model callable. Default is disabled, so no
         # network client is created and agents keep their deterministic path.
@@ -248,6 +255,7 @@ def create_app(
         version="0.2.0",
         lifespan=lifespan,
     )
+    app.state.context_provider = None
 
     if enable_cors:
         app.add_middleware(
