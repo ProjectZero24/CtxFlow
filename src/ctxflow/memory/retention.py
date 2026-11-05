@@ -19,17 +19,21 @@ class RetentionPolicy:
 
 
 async def purge_run_events(pool: Any, policy: RetentionPolicy | None = None) -> int:
-    """Delete run events older than the configured retention window.
+    """Delete only complete runs older than the configured retention window.
 
     The operation is intentionally separate from request-time retrieval. The
-    current schema has no checkpoint table, so run events are the only
-    retention-managed records.
+    current schema has no checkpoint table, so retaining any partially active
+    run preserves its verifiable hash-chain prefix.
     """
 
     active_policy = policy or RetentionPolicy()
     status = await pool.execute(
         """DELETE FROM run_events
-        WHERE created_at < NOW() - ($1 * INTERVAL '1 day')""",
+        WHERE run_id IN (
+            SELECT run_id FROM run_events
+            GROUP BY run_id
+            HAVING MAX(created_at) < NOW() - ($1 * INTERVAL '1 day')
+        )""",
         active_policy.run_events_days,
     )
     match = re.fullmatch(r"DELETE\s+(\d+)", status.strip(), re.IGNORECASE)

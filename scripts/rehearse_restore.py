@@ -39,6 +39,7 @@ def rehearse(
     *,
     restore_config: DatabaseConfig | None = None,
     execute_restore: bool = False,
+    validate_only: bool = False,
     dump_executable: str = "pg_dump",
     restore_executable: str = "pg_restore",
 ) -> dict[str, Any]:
@@ -46,6 +47,10 @@ def rehearse(
 
     if execute_restore and restore_config is None:
         raise ValueError("restore_config is required when execute_restore is true")
+    if validate_only and execute_restore:
+        raise ValueError("validate_only cannot be combined with execute_restore")
+    if validate_only and not archive.is_file():
+        raise ValueError(f"archive file does not exist: {archive}")
     if (
         execute_restore
         and restore_config is not None
@@ -58,7 +63,8 @@ def rehearse(
     ):
         raise ValueError("restore target must differ from the source database")
 
-    backup_database(source_config, archive, executable=dump_executable)
+    if not validate_only:
+        backup_database(source_config, archive, executable=dump_executable)
     _run_postgres_tool(
         restore_executable,
         ("--list", str(archive)),
@@ -89,6 +95,11 @@ def main() -> None:
     parser.add_argument("--restore-dotenv", type=Path)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--execute-restore", action="store_true")
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="validate an existing archive without replacing it with a new dump",
+    )
     args = parser.parse_args()
 
     try:
@@ -103,6 +114,7 @@ def main() -> None:
             args.archive,
             restore_config=restore_config,
             execute_restore=args.execute_restore,
+            validate_only=args.validate_only,
         )
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(str(error)) from error

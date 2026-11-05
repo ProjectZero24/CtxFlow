@@ -369,6 +369,16 @@ class PostgresMemoryStore:
             await self._insert_edge(connection, edge)
 
     async def _insert_edge(self, connection: object, edge: Edge) -> None:
+        projects = await connection.fetch(
+            """SELECT id, project_id FROM memories
+            WHERE id = ANY($1::text[])""",
+            [edge.src, edge.dst],
+        )
+        project_by_id = {row["id"]: row["project_id"] for row in projects}
+        if edge.src not in project_by_id or edge.dst not in project_by_id:
+            raise KeyError("Both edge endpoints must exist in the memory store")
+        if project_by_id[edge.src] != project_by_id[edge.dst]:
+            raise ValueError("Memory edges cannot cross project boundaries")
         await connection.execute(
             """INSERT INTO graph_edges
             (src,dst,relation,weight,confidence,created_by,created_at)
@@ -485,7 +495,7 @@ class PostgresMemoryStore:
         events = [
             RunEvent(
                 row["run_id"], row["project_id"], row["sequence"],
-                row["event_type"], dict(row["event_data"]),
+                row["event_type"], _json_object(row["event_data"]),
                 row["previous_hash"], row["event_hash"], row["created_at"],
             )
             for row in rows

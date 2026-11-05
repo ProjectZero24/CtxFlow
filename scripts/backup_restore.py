@@ -56,6 +56,7 @@ def backup_database(
             f"--port={config.port}",
             f"--username={config.user}",
             f"--dbname={config.database}",
+            "--no-password",
         ),
         config,
     )
@@ -77,6 +78,8 @@ def restore_database(
             "--clean",
             "--if-exists",
             "--no-owner",
+            "--exit-on-error",
+            "--no-password",
             f"--host={config.host}",
             f"--port={config.port}",
             f"--username={config.user}",

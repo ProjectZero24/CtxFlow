@@ -95,7 +95,7 @@ class EventIngestor:
         self.provider_timeout = provider_timeout
         self.provider_retries = provider_retries
         self._seen: dict[str, list[str]] = {}
-        self._last_by_session: dict[str, str] = {}
+        self._last_by_session: dict[tuple[str, str], str] = {}
         self._events: dict[str, Event] = {}
         self._known_memories: dict[str, Memory] = {}
         self._edge_enrichment_failures: dict[str, bool] = {}
@@ -136,7 +136,8 @@ class EventIngestor:
                 entities=list(item.entities),
             ))
             count_tokens(memories[-1], self.tokenizer)
-        parent = self._last_by_session.get(event.session_id)
+        session_key = (event.project_id, event.session_id)
+        parent = self._last_by_session.get(session_key)
         previous_ids = [parent] + [memory.id for memory in memories[:-1]]
         edges = [
             Edge(memory.id, previous_id, Relation.FOLLOWS)
@@ -197,7 +198,7 @@ class EventIngestor:
         self._seen[event_hash] = memory_ids
         self._events[event_hash] = event
         self._known_memories.update((memory.id, memory) for memory in memories)
-        self._last_by_session[event.session_id] = memories[-1].id
+        self._last_by_session[session_key] = memories[-1].id
         for match in canonical_matches:
             if match is not None:
                 record_access = getattr(self.store, "record_access", None)
@@ -283,11 +284,12 @@ class EventIngestor:
             memory.embedding,
             memory.text,
             ANN_CANDIDATE_LIMIT,
+            project_id=memory.project_id,
             types=[memory.memory_type],
         )
         candidates: list[Memory] = []
         for item in scored:
-            existing = await self.store.get(item.memory_id)
+            existing = await self.store.get(item.memory_id, project_id=memory.project_id)
             if existing is not None and existing.id != memory.id:
                 candidates.append(existing)
         return candidates

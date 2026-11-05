@@ -101,3 +101,29 @@ def test_rehearsal_executes_restore_only_when_requested(tmp_path, monkeypatch):
         ("validate", "pg_restore", "source-db"),
         ("restore", "pg_restore", "staging-db", str(archive)),
     ]
+
+
+def test_rehearsal_validate_only_does_not_replace_archive(tmp_path, monkeypatch):
+    module = _load_module()
+    source = DatabaseConfig("source", 5432, "source-db", "user", "secret")
+    archive = tmp_path / "known-good.dump"
+    archive.write_bytes(b"known good")
+    calls = []
+
+    def fail_backup(*_args, **_kwargs):
+        raise AssertionError("validate-only must not create a backup")
+
+    monkeypatch.setattr(module, "backup_database", fail_backup)
+    monkeypatch.setattr(
+        module,
+        "_run_postgres_tool",
+        lambda executable, arguments, config: calls.append(
+            (executable, arguments, config.database)
+        ),
+    )
+
+    report = module.rehearse(source, archive, validate_only=True)
+
+    assert report["archive_valid"] is True
+    assert archive.read_bytes() == b"known good"
+    assert calls == [("pg_restore", ("--list", str(archive)), "source-db")]

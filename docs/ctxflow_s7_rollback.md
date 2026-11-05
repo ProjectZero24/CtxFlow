@@ -40,8 +40,8 @@ approved the destructive `pg_restore --clean --if-exists` operation.
 
 1. Stop writers and prevent new ingestion jobs from starting.
 2. Capture a fresh backup of the current database before changing anything.
-3. Identify the last known-good archive and validate it with the rehearsal
-   command above.
+3. Identify the last known-good archive and validate it without replacing it:
+   `python scripts/rehearse_restore.py --archive .artifacts/ctxflow-memory.dump --validate-only`.
 4. Restore that archive into the approved target using
    `--execute-restore`.
 5. Apply migrations only in numbered order; do not edit an existing migration.
