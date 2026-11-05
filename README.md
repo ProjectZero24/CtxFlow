@@ -12,6 +12,55 @@ A schema-agnostic, incrementally-built graph memory framework for LLM agents.
 5. **Decoupled Pruning**: Separate maintenance pass supporting `drop` and `summarize` (cluster compaction) strategies based on staleness signals.
 6. **Persistence**: Export and import graphs via JSON or MessagePack binary formats.
 
+## Layer 1 delivery status
+
+The Christo-owned memory work is tracked in
+[`docs/team/CHRISTO.md`](docs/team/CHRISTO.md). The following deliverables are
+implemented and locally verified:
+
+- project-scoped memory records and fail-closed in-memory/PostgreSQL retrieval;
+- atomic supersession and degree-cap regression coverage;
+- optional token-budgeted context adapter and maintenance retention command;
+- offline compaction in [`scripts/compact_graph.py`](scripts/compact_graph.py);
+- the 10,000-node benchmark in
+  [`scripts/bench_graph.py`](scripts/bench_graph.py);
+- a deterministic demo corpus and footprint report in
+  [`scripts/demo_corpus.py`](scripts/demo_corpus.py);
+- additive scope/run-event migration, backup/restore tooling, and a
+  non-destructive archive rehearsal in
+  [`scripts/rehearse_restore.py`](scripts/rehearse_restore.py).
+
+Verification run on 25 October 2026:
+
+```text
+python -m pytest -q
+172 passed, 5 skipped
+
+python -m pytest -q tests/test_graph.py tests/test_governance.py \
+  tests/test_serialization.py tests/test_memory_vertical_slice.py \
+  tests/test_postgres_runtime.py
+53 passed, 1 skipped
+
+python -m researchos.eval
+# ctxflow_graph: 100% answer accuracy, 100% supersession defence,
+# 100% provenance accuracy
+```
+
+The optional `ContextProvider` is now wired into `create_app(memory_store=...)`
+behind `RESEARCHOS_MEMORY_ENABLED`; the default app remains memory-disabled.
+The built-in memory stores now expose optional append-only
+`append_run_event()` and `verify_run_event_chain()` capabilities. These methods
+are deliberately not required by the shared `MemoryStore` protocol.
+
+The only remaining operational gate is executing and recording a live restore
+against a separate staging database. No staging configuration is present in
+this checkout, so the source database has not been used as a restore target.
+
+The existing rehearsal command validates a custom backup archive with
+`pg_restore --list` without modifying the source database. See
+[`docs/ctxflow_s7_rollback.md`](docs/ctxflow_s7_rollback.md) for the safe
+staging and rollback procedure.
+
 ---
 
 ## Installation
@@ -293,4 +342,3 @@ pytest tests/test_agents.py tests/test_skills.py tests/test_api.py \
        tests/test_workspace_api.py tests/test_eval_harness.py \
        tests/test_model_gateway.py
 ```
-
